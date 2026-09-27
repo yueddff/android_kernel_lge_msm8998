@@ -1,43 +1,23 @@
-name: Build LG V30 (joan) kernel
+name: Build LG V30 (joan) kernel - 4K fix
 
 # ============================================================
-# 零本地操作 + 缓存加速版：不需要在本地克隆/打补丁，全程 GitHub 网页操作
+# v3：Clang 构建 + 正确的 4K 修复（fbdev MDSS 路径）
+# 说明：
+#   - 构建方式沿用已验证可用的方案（Clang + lineageos_joan_defconfig + O=out），
+#     不再需要任何 GCC 兼容性修复
+#   - 4K 修复打在真实生效的路径上：drivers/video/fbdev/msm/mdss_hdmi_edid.c
+#     （joan 的 HDMI/DP 输出走 fbdev MDSS 栈，lineageos_joan_defconfig 无 DRM_MSM）
+#   - 内核源码 + 编译产物会缓存，第二次起跳过 clone/patch/defconfig，
+#     只增量编译改动过的文件（约 5~10 分钟）
 # 使用前提：
-#   1. 你已经把补丁文件上传到本仓库 lineage-22.2 分支根目录
-#      （文件名为：0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch）
-#   2. 仓库页 Actions -> 本工作流 -> Run workflow
-# 工作流会自动：checkout 官方内核源码 -> 下载你的补丁并应用 -> 交叉编译
-# 加速机制：
-#   - 内核源码 + 编译产物会缓存（Cache），第二次起跳过 checkout/patch/defconfig，
-#     只增量编译改动过的文件，构建时间从 25~35 分钟降到约 5~10 分钟
-#   - 补丁文件变了或换 defconfig 会自动失效缓存，重新全量构建
+#   - 补丁文件已上传到本仓库 lineage-22.2 分支根目录：
+#     0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch
+#   - 仓库页 Actions -> 本工作流 -> Run workflow（无需填参数）
 # ============================================================
 
 on:
   workflow_dispatch:
     inputs:
-      defconfig:
-        description: '内核配置（对应你的机型变体）'
-        required: true
-        default: 'joan_global_com_defconfig'
-        type: choice
-        options:
-          - joan_global_com_defconfig      # H930 / H930DS / US998（国际版/美版解锁版，官方支持）
-          - joan_att_us_defconfig          # AT&T (H931)
-          - joan_spr_us_defconfig          # Sprint (H932)
-          - joan_tmo_us_defconfig          # T-Mobile (H932PR)
-          - joan_vzw_defconfig             # Verizon (VS996)
-          - joan_usc_us_defconfig          # US Cellular (US997)
-          - joan_acg_us_defconfig
-          - joan_clr_pr_defconfig
-          - joan_global_ca_defconfig
-          - joan_global_ldu_defconfig
-          - joan_nao_us_defconfig
-          - joan_dcm_jp_defconfig          # NTT docomo (LGV36)
-          - joan_kddi_jp_defconfig         # au (LGV35)
-          - joan_kt_kr_defconfig           # KT (V30+ 韩版)
-          - joan_lgu_kr_defconfig          # LG U+ (韩版)
-          - joan_skt_kr_defconfig          # SK Telecom (韩版)
       boot_img_url:
         description: '（可选）你当前 LineageOS boot.img 的直链 URL。留空则只输出内核（Image.gz-dtb）。'
         required: false
@@ -56,100 +36,83 @@ jobs:
         id: cache
         uses: actions/cache/restore@v4
         with:
-          path: ${{ github.workspace }}/kernel-src
-          key: joan-kernel-${{ github.event.inputs.defconfig }}-${{ hashFiles('0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch') }}
+          path: ${{ github.workspace }}/kernel
+          key: joan4k-kernel-${{ hashFiles('0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch') }}
 
-      - name: Checkout official LineageOS kernel source (only when no cache)
+      - name: Clone LineageOS kernel source (only when no cache)
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/checkout@v4
-        with:
-          repository: LineageOS/android_kernel_lge_msm8998
-          ref: lineage-22.2
-          path: kernel-src
+        run: |
+          # 自我保护：若 kernel 目录已存在（例如缓存恢复）则跳过 clone
+          if [ -f kernel/Makefile ] && [ -d kernel/.git ]; then
+            echo "==> kernel source already present, skipping clone"
+          else
+            rm -rf kernel
+            git clone --depth=1 -b lineage-22.2 https://github.com/LineageOS/android_kernel_lge_msm8998.git kernel
+          fi
 
-      - name: Download and apply 4K patch (only when no cache)
-        if: steps.cache.outputs.cache-hit != 'true'
+      - name: Download and apply 4K patch (idempotent, safe with cache)
         run: |
           set -e
-          cd kernel-src
-          # 补丁文件必须已上传到你的仓库 lineage-22.2 分支根目录
+          cd kernel
+          # 优先用 yueddff，失败则回退 12yuedf（两个用户名都试，总有一个能下到）
           curl -fsSL -o /tmp/fix.patch \
+            "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch" \
+            || curl -fsSL -o /tmp/fix.patch \
             "https://raw.githubusercontent.com/12yuedf/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch"
-          git apply /tmp/fix.patch
-          echo "==> Patch applied:"
+          if git apply --check /tmp/fix.patch 2>/dev/null; then
+            git apply /tmp/fix.patch
+            echo "==> 4K patch applied"
+          elif git apply -R --check /tmp/fix.patch 2>/dev/null; then
+            echo "==> 4K patch already applied (from cache)"
+          else
+            echo "!! patch state unknown, forcing apply"
+            git apply /tmp/fix.patch
+          fi
           git diff --stat
 
-      - name: Install cross toolchain and build deps
+      - name: Install dependencies (incl. clang toolchain)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            bc bison flex libssl-dev make python3 \
-            device-tree-compiler
-          echo "Toolchain: $(aarch64-linux-gnu-gcc --version | head -1)"
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache curl flex git git-lfs gnupg gperf imagemagick lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python-is-python3
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          sudo apt-get install -y gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
+          sudo apt-get install -y clang
+          clang --version | head -1
 
-      - name: Build kernel (incremental when cache hit)
+      - name: Build kernel (Clang, incremental when cache hit)
         id: build
         run: |
           set -e
-          cd kernel-src
+          cd kernel
           export ARCH=arm64
+          export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          export KCFLAGS="-Wno-error"
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CC=clang
+          export REAL_CC=clang
 
-          # 源码兼容修复：同目录头文件尖括号包含（GCC 搜不到）
-          # 以下修复均幂等：重复执行无害，缓存源码也能直接再跑
-          sed -i 's|#include <btfm_slim.h>|#include "btfm_slim.h"|' drivers/bluetooth/btfm_slim.c
-          sed -i 's|#include <btfm_slim_wcn3990.h>|#include "btfm_slim_wcn3990.h"|' drivers/bluetooth/btfm_slim.c
-          sed -i 's|#include <btfm_slim.h>|#include "btfm_slim.h"|' drivers/bluetooth/btfm_slim_wcn3990.h
-          sed -i 's|#include <device_event.h>|#include "device_event.h"|' sound/soc/msm/msm8998.c
-
-          # 通用兜底（高效版）：把"尖括号包含同目录头文件"批量修正，避免后续同类报错
-          # 每文件只 grep 一次提取头文件名，按唯一文件名批量 sed
-          grep -rl --include="*.c" --include="*.h" -E '#include <[A-Za-z0-9_]+\.h>' drivers sound include arch/arm64 2>/dev/null | while read -r f; do
-            d="$(dirname "$f")"
-            for h in $(grep -oE '#include <[A-Za-z0-9_]+\.h>' "$f" | sed 's/.*<//; s/>//' | sort -u); do
-              if [ -f "$d/$h" ]; then
-                sed -i "s|#include <$h>|#include \"$h\"|" "$f"
-                echo "FIXED include: $f -> $h"
-              fi
-            done
-          done
-
-          # 通用 trace 头文件路径修正：TRACE_INCLUDE_PATH "." 会导致 ./xxx.h 找不到
-          # （kgsl_trace.h / adreno_trace.h 等均为此类），自动改为相对内核根目录的正确路径
-          for h in $(grep -rl --include="*.h" -E '^#define TRACE_INCLUDE_PATH \.$' drivers sound arch/arm64 2>/dev/null); do
-            d="$(dirname "$h")"
-            sed -i "s|^#define TRACE_INCLUDE_PATH \.$|#define TRACE_INCLUDE_PATH $d|" "$h"
-            echo "FIXED trace path: $h -> $d"
-          done
-
-          # 源码兼容修复：关闭内核默认 -Werror（GCC 11 新警告会阻断老内核构建）
-          sed -i 's/KBUILD_CFLAGS\t+= -Werror/KBUILD_CFLAGS += -Wno-error/' Makefile
-          find . -name Makefile -not -path './.git/*' -exec sed -i \
-            's/ccflags-y\s*+=\s*-Werror$/ccflags-y += -Wno-error/; s/ -Werror=/ -Wno-error=/g' {} +
-          sed -i 's/-Werror=implicit-int/-Wno-error=implicit-int/; s/-Werror=strict-prototypes/-Wno-error=strict-prototypes/; s/-Werror=date-time/-Wno-error=date-time/' Makefile
-
-          # 有缓存（.config 已存在）则跳过 defconfig，直接增量编译
-          if [ ! -f .config ]; then
-            echo "==> Using defconfig: ${{ github.event.inputs.defconfig }}"
-            make ${{ github.event.inputs.defconfig }}
+          # 有缓存（out/.config 已存在）则跳过 defconfig，直接增量编译
+          if [ ! -f out/.config ]; then
+            echo "==> Using defconfig: lineageos_joan_defconfig"
+            make O=out lineageos_joan_defconfig
           else
             echo "==> Cache hit: using existing .config, incremental build"
           fi
-          make -j"$(nproc)" Image.gz-dtb
+
+          make O=out -j"$(nproc)" Image.gz-dtb KCFLAGS="-Wno-error" CONFIG_WERROR=n
 
           echo "==> Build artifacts:"
-          ls -lh arch/arm64/boot/Image.gz-dtb
-          mkdir -p out
-          cp arch/arm64/boot/Image.gz-dtb out/Image.gz-dtb
+          ls -lh out/arch/arm64/boot/Image.gz-dtb
+          mkdir -p out/final
+          cp out/arch/arm64/boot/Image.gz-dtb out/final/Image.gz-dtb
           echo "built=yes" >> "$GITHUB_OUTPUT"
 
       - name: (Optional) Repack boot.img with your current ramdisk
         if: steps.build.outputs.built == 'yes' && github.event.inputs.boot_img_url != ''
         run: |
           set -e
-          cd kernel-src
+          cd kernel
           git clone --depth 1 https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg
 
           echo "==> Downloading current boot.img: ${{ github.event.inputs.boot_img_url }}"
@@ -164,7 +127,7 @@ jobs:
 
           echo "==> Repacking with new kernel"
           python3 /tmp/mkbootimg/mkbootimg.py \
-            --kernel out/Image.gz-dtb \
+            --kernel out/final/Image.gz-dtb \
             --ramdisk /tmp/boot-unpacked/ramdisk \
             --base "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['base'])")" \
             --pagesize "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['pagesize'])")" \
@@ -176,30 +139,30 @@ jobs:
             --os_version "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['os_version'])")" \
             --os_patch_level "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['os_patch_level'])")" \
             --cmdline "$(python3 -c "import json;print(json.load(open('/tmp/boot-unpacked/boot_info.json'))['cmdline'])")" \
-            -o out/boot.img
-          ls -lh out/boot.img
+            -o out/final/boot.img
+          ls -lh out/final/boot.img
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: joan-4k-kernel
           path: |
-            ${{ github.workspace }}/kernel-src/out/Image.gz-dtb
-            ${{ github.workspace }}/kernel-src/out/boot.img
+            ${{ github.workspace }}/kernel/out/final/Image.gz-dtb
+            ${{ github.workspace }}/kernel/out/final/boot.img
           if-no-files-found: warn
 
       - name: Save kernel cache (for next run)
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: ${{ github.workspace }}/kernel-src
-          key: joan-kernel-${{ github.event.inputs.defconfig }}-${{ hashFiles('0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch') }}
+          path: ${{ github.workspace }}/kernel
+          key: joan4k-kernel-${{ hashFiles('0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch') }}
 
       - name: Build summary
         run: |
           echo "## 构建完成" >> "$GITHUB_STEP_SUMMARY"
           echo "- 内核(含DTB): \`Image.gz-dtb\`" >> "$GITHUB_STEP_SUMMARY"
-          if ls ${{ github.workspace }}/kernel-src/out/boot.img 2>/dev/null; then
+          if ls ${{ github.workspace }}/kernel/out/final/boot.img 2>/dev/null; then
             echo "- 可刷写镜像: \`boot.img\`" >> "$GITHUB_STEP_SUMMARY"
             echo "  刷入: \`fastboot flash boot boot.img\`" >> "$GITHUB_STEP_SUMMARY"
           fi
