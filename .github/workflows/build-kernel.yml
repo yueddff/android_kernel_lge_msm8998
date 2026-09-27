@@ -56,7 +56,7 @@ jobs:
         id: cache
         uses: actions/cache/restore@v4
         with:
-          path: /tmp/kernel
+          path: ${{ github.workspace }}/kernel-src
           key: joan-kernel-${{ github.event.inputs.defconfig }}-${{ hashFiles('0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch') }}
 
       - name: Checkout official LineageOS kernel source (only when no cache)
@@ -65,13 +65,13 @@ jobs:
         with:
           repository: LineageOS/android_kernel_lge_msm8998
           ref: lineage-22.2
-          path: /tmp/kernel
+          path: kernel-src
 
       - name: Download and apply 4K patch (only when no cache)
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           set -e
-          cd /tmp/kernel
+          cd kernel-src
           # 补丁文件必须已上传到你的仓库 lineage-22.2 分支根目录
           curl -fsSL -o /tmp/fix.patch \
             "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch"
@@ -92,7 +92,7 @@ jobs:
         id: build
         run: |
           set -e
-          cd /tmp/kernel
+          cd kernel-src
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export KCFLAGS="-Wno-error"
@@ -143,7 +143,7 @@ jobs:
         if: steps.build.outputs.built == 'yes' && github.event.inputs.boot_img_url != ''
         run: |
           set -e
-          cd /tmp/kernel
+          cd kernel-src
           git clone --depth 1 https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg
 
           echo "==> Downloading current boot.img: ${{ github.event.inputs.boot_img_url }}"
@@ -178,22 +178,22 @@ jobs:
         with:
           name: joan-4k-kernel
           path: |
-            /tmp/kernel/out/Image.gz-dtb
-            /tmp/kernel/out/boot.img
+            ${{ github.workspace }}/kernel-src/out/Image.gz-dtb
+            ${{ github.workspace }}/kernel-src/out/boot.img
           if-no-files-found: warn
 
       - name: Save kernel cache (for next run)
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: /tmp/kernel
+          path: ${{ github.workspace }}/kernel-src
           key: joan-kernel-${{ github.event.inputs.defconfig }}-${{ hashFiles('0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch') }}
 
       - name: Build summary
         run: |
           echo "## 构建完成" >> "$GITHUB_STEP_SUMMARY"
           echo "- 内核(含DTB): \`Image.gz-dtb\`" >> "$GITHUB_STEP_SUMMARY"
-          if ls /tmp/kernel/out/boot.img 2>/dev/null; then
+          if ls ${{ github.workspace }}/kernel-src/out/boot.img 2>/dev/null; then
             echo "- 可刷写镜像: \`boot.img\`" >> "$GITHUB_STEP_SUMMARY"
             echo "  刷入: \`fastboot flash boot boot.img\`" >> "$GITHUB_STEP_SUMMARY"
           fi
