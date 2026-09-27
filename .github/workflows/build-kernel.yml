@@ -74,7 +74,7 @@ jobs:
           cd kernel-src
           # 补丁文件必须已上传到你的仓库 lineage-22.2 分支根目录
           curl -fsSL -o /tmp/fix.patch \
-            "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch"
+            "https://raw.githubusercontent.com/12yuedf/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch"
           git apply /tmp/fix.patch
           echo "==> Patch applied:"
           git diff --stat
@@ -103,8 +103,6 @@ jobs:
           sed -i 's|#include <btfm_slim_wcn3990.h>|#include "btfm_slim_wcn3990.h"|' drivers/bluetooth/btfm_slim.c
           sed -i 's|#include <btfm_slim.h>|#include "btfm_slim.h"|' drivers/bluetooth/btfm_slim_wcn3990.h
           sed -i 's|#include <device_event.h>|#include "device_event.h"|' sound/soc/msm/msm8998.c
-          # GPU trace 头文件路径修正：TRACE_INCLUDE_PATH "." 会导致 ./kgsl_trace.h 找不到
-          sed -i 's|^#define TRACE_INCLUDE_PATH \.$|#define TRACE_INCLUDE_PATH ../../gpu/msm|' drivers/gpu/msm/kgsl_trace.h
 
           # 通用兜底（高效版）：把"尖括号包含同目录头文件"批量修正，避免后续同类报错
           # 每文件只 grep 一次提取头文件名，按唯一文件名批量 sed
@@ -116,6 +114,14 @@ jobs:
                 echo "FIXED include: $f -> $h"
               fi
             done
+          done
+
+          # 通用 trace 头文件路径修正：TRACE_INCLUDE_PATH "." 会导致 ./xxx.h 找不到
+          # （kgsl_trace.h / adreno_trace.h 等均为此类），自动改为相对内核根目录的正确路径
+          for h in $(grep -rl --include="*.h" -E '^#define TRACE_INCLUDE_PATH \.$' drivers sound arch/arm64 2>/dev/null); do
+            d="$(dirname "$h")"
+            sed -i "s|^#define TRACE_INCLUDE_PATH \.$|#define TRACE_INCLUDE_PATH $d|" "$h"
+            echo "FIXED trace path: $h -> $d"
           done
 
           # 源码兼容修复：关闭内核默认 -Werror（GCC 11 新警告会阻断老内核构建）
