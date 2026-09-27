@@ -1,12 +1,16 @@
 name: Build LG V30 (joan) kernel
 
 # ============================================================
-# 零本地操作版：不需要在本地克隆/打补丁，全程 GitHub 网页操作
+# 零本地操作 + 缓存加速版：不需要在本地克隆/打补丁，全程 GitHub 网页操作
 # 使用前提：
 #   1. 你已经把补丁文件上传到本仓库 lineage-22.2 分支根目录
 #      （文件名为：0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch）
 #   2. 仓库页 Actions -> 本工作流 -> Run workflow
 # 工作流会自动：checkout 官方内核源码 -> 下载你的补丁并应用 -> 交叉编译
+# 加速机制：
+#   - 内核源码 + 编译产物会缓存（Cache），第二次起跳过 checkout/patch/defconfig，
+#     只增量编译改动过的文件，构建时间从 25~35 分钟降到约 5~10 分钟
+#   - 补丁文件变了或换 defconfig 会自动失效缓存，重新全量构建
 # ============================================================
 
 on:
@@ -45,17 +49,30 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout official LineageOS kernel source
+      - name: Checkout this repo (workflow + patch)
+        uses: actions/checkout@v4
+
+      - name: Restore kernel source + build cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/kernel
+          key: joan-kernel-${{ github.event.inputs.defconfig }}-${{ hashFiles('0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch') }}
+
+      - name: Checkout official LineageOS kernel source (only when no cache)
+        if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_kernel_lge_msm8998
           ref: lineage-22.2
+          path: /tmp/kernel
 
-      - name: Download and apply 4K patch (from this repo)
+      - name: Download and apply 4K patch (only when no cache)
+        if: steps.cache.outputs.cache-hit != 'true'
         run: |
           set -e
+          cd /tmp/kernel
           # 补丁文件必须已上传到你的仓库 lineage-22.2 分支根目录
-          # 把下面的 12yuedf 换成你的 GitHub 用户名
           curl -fsSL -o /tmp/fix.patch \
             "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch"
           git apply /tmp/fix.patch
@@ -71,22 +88,26 @@ jobs:
             device-tree-compiler
           echo "Toolchain: $(aarch64-linux-gnu-gcc --version | head -1)"
 
-      - name: Build kernel
+      - name: Build kernel (incremental when cache hit)
         id: build
         run: |
           set -e
+          cd /tmp/kernel
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export KCFLAGS="-Wno-error"
 
           # 源码兼容修复：同目录头文件尖括号包含（GCC 搜不到）
+          # 以下修复均幂等：重复执行无害，缓存源码也能直接再跑
           sed -i 's|#include <btfm_slim.h>|#include "btfm_slim.h"|' drivers/bluetooth/btfm_slim.c
           sed -i 's|#include <btfm_slim_wcn3990.h>|#include "btfm_slim_wcn3990.h"|' drivers/bluetooth/btfm_slim.c
           sed -i 's|#include <btfm_slim.h>|#include "btfm_slim.h"|' drivers/bluetooth/btfm_slim_wcn3990.h
           sed -i 's|#include <device_event.h>|#include "device_event.h"|' sound/soc/msm/msm8998.c
+          # GPU trace 头文件路径修正：TRACE_INCLUDE_PATH "." 会导致 ./kgsl_trace.h 找不到
+          sed -i 's|^#define TRACE_INCLUDE_PATH \.$|#define TRACE_INCLUDE_PATH ../../gpu/msm|' drivers/gpu/msm/kgsl_trace.h
 
           # 通用兜底（高效版）：把"尖括号包含同目录头文件"批量修正，避免后续同类报错
-          # 逐行检查太慢，这里改为：每文件只 grep 一次提取头文件名，按唯一文件名批量 sed
+          # 每文件只 grep 一次提取头文件名，按唯一文件名批量 sed
           grep -rl --include="*.c" --include="*.h" -E '#include <[A-Za-z0-9_]+\.h>' drivers sound include arch/arm64 2>/dev/null | while read -r f; do
             d="$(dirname "$f")"
             for h in $(grep -oE '#include <[A-Za-z0-9_]+\.h>' "$f" | sed 's/.*<//; s/>//' | sort -u); do
@@ -103,8 +124,13 @@ jobs:
             's/ccflags-y\s*+=\s*-Werror$/ccflags-y += -Wno-error/; s/ -Werror=/ -Wno-error=/g' {} +
           sed -i 's/-Werror=implicit-int/-Wno-error=implicit-int/; s/-Werror=strict-prototypes/-Wno-error=strict-prototypes/; s/-Werror=date-time/-Wno-error=date-time/' Makefile
 
-          echo "==> Using defconfig: ${{ github.event.inputs.defconfig }}"
-          make ${{ github.event.inputs.defconfig }}
+          # 有缓存（.config 已存在）则跳过 defconfig，直接增量编译
+          if [ ! -f .config ]; then
+            echo "==> Using defconfig: ${{ github.event.inputs.defconfig }}"
+            make ${{ github.event.inputs.defconfig }}
+          else
+            echo "==> Cache hit: using existing .config, incremental build"
+          fi
           make -j"$(nproc)" Image.gz-dtb
 
           echo "==> Build artifacts:"
@@ -117,6 +143,7 @@ jobs:
         if: steps.build.outputs.built == 'yes' && github.event.inputs.boot_img_url != ''
         run: |
           set -e
+          cd /tmp/kernel
           git clone --depth 1 https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg
 
           echo "==> Downloading current boot.img: ${{ github.event.inputs.boot_img_url }}"
@@ -151,15 +178,22 @@ jobs:
         with:
           name: joan-4k-kernel
           path: |
-            out/Image.gz-dtb
-            out/boot.img
+            /tmp/kernel/out/Image.gz-dtb
+            /tmp/kernel/out/boot.img
           if-no-files-found: warn
+
+      - name: Save kernel cache (for next run)
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/kernel
+          key: joan-kernel-${{ github.event.inputs.defconfig }}-${{ hashFiles('0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch') }}
 
       - name: Build summary
         run: |
           echo "## 构建完成" >> "$GITHUB_STEP_SUMMARY"
           echo "- 内核(含DTB): \`Image.gz-dtb\`" >> "$GITHUB_STEP_SUMMARY"
-          if ls out/boot.img 2>/dev/null; then
+          if ls /tmp/kernel/out/boot.img 2>/dev/null; then
             echo "- 可刷写镜像: \`boot.img\`" >> "$GITHUB_STEP_SUMMARY"
             echo "  刷入: \`fastboot flash boot boot.img\`" >> "$GITHUB_STEP_SUMMARY"
           fi
