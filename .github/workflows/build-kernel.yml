@@ -57,7 +57,7 @@ jobs:
           # 补丁文件必须已上传到你的仓库 lineage-22.2 分支根目录
           # 把下面的 12yuedf 换成你的 GitHub 用户名
           curl -fsSL -o /tmp/fix.patch \
-            "https://raw.githubusercontent.com/12yuedf/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch"
+            "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch"
           git apply /tmp/fix.patch
           echo "==> Patch applied:"
           git diff --stat
@@ -85,16 +85,16 @@ jobs:
           sed -i 's|#include <btfm_slim.h>|#include "btfm_slim.h"|' drivers/bluetooth/btfm_slim_wcn3990.h
           sed -i 's|#include <device_event.h>|#include "device_event.h"|' sound/soc/msm/msm8998.c
 
-          # 通用兜底：把其他"尖括号包含同目录头文件"也一并修正（避免后续同类报错）
-          for f in $(grep -rl --include="*.c" --include="*.h" -E '#include <[A-Za-z0-9_]+\.h>' drivers sound include arch/arm64 2>/dev/null); do
+          # 通用兜底（高效版）：把"尖括号包含同目录头文件"批量修正，避免后续同类报错
+          # 逐行检查太慢，这里改为：每文件只 grep 一次提取头文件名，按唯一文件名批量 sed
+          grep -rl --include="*.c" --include="*.h" -E '#include <[A-Za-z0-9_]+\.h>' drivers sound include arch/arm64 2>/dev/null | while read -r f; do
             d="$(dirname "$f")"
-            while read -r line; do
-              hdr=$(echo "$line" | sed -n 's/.*#include <\([A-Za-z0-9_]*\.h\)>.*/\1/p')
-              if [ -n "$hdr" ] && [ -f "$d/$hdr" ]; then
-                sed -i "s|#include <$hdr>|#include \"$hdr\"|" "$f"
-                echo "FIXED include: $f -> $hdr"
+            for h in $(grep -oE '#include <[A-Za-z0-9_]+\.h>' "$f" | sed 's/.*<//; s/>//' | sort -u); do
+              if [ -f "$d/$h" ]; then
+                sed -i "s|#include <$h>|#include \"$h\"|" "$f"
+                echo "FIXED include: $f -> $h"
               fi
-            done < "$f"
+            done
           done
 
           # 源码兼容修复：关闭内核默认 -Werror（GCC 11 新警告会阻断老内核构建）
