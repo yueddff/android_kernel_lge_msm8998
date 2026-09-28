@@ -29,6 +29,15 @@ jobs:
           git apply --verbose 0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch
           echo "4K patch applied OK"
 
+      - name: Fix tspdrv.h for kernel build (lineage-20 upstream bug)
+        run: |
+          cd kernel
+          # lineage-20 的 tspdrv.h 无条件 include <sys/ioctl.h>（glibc 用户态头），
+          # 内核编译时找不到该文件导致 drivers/tspdrv 编译失败。
+          # 照抄 lineage-22.2 的官方修复：内核态用 "ioctl.h"，用户态才用 <sys/ioctl.h>
+          python3 -c "p='include/uapi/linux/tspdrv.h'; s=open(p).read(); s=s.replace('#include <sys/ioctl.h>', '#ifdef __KERNEL__\n#include \"ioctl.h\"\n#else // not __KERNEL__\n#include <sys/ioctl.h>\n#endif // __KERNEL__', 1); open(p,'w').write(s)"
+          head -40 include/uapi/linux/tspdrv.h | tail -6
+
       - name: Install dependencies and Clang toolchain
         run: |
           sudo apt-get update
