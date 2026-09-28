@@ -1,0 +1,219 @@
+name: Slim ROM v2 (LineageOS 20 joan)
+
+# 真正的源头优化：删应用 + 禁服务 + 删 HAL + 深度 prop 调优
+# 用法：Actions → Slim ROM v2 → Run workflow → 填入 LineageOS 20 joan ROM zip 直链
+
+on:
+  workflow_dispatch:
+    inputs:
+      rom_url:
+        description: 'LineageOS 20 joan ROM zip 直链（https://...zip）'
+        required: true
+        type: string
+
+jobs:
+  slim:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download ROM zip
+        run: |
+          mkdir -p work
+          curl -L --fail -o work/rom.zip "${{ github.event.inputs.rom_url }}"
+          ls -lh work/rom.zip
+
+      - name: Extract payload.bin from zip
+        run: |
+          cd work
+          unzip -o rom.zip payload.bin
+          ls -lh payload.bin
+
+      - name: Download payload-dumper-go
+        run: |
+          cd work
+          curl -L --fail -o pdd.tgz https://github.com/ssut/payload-dumper-go/releases/download/1.2.2/payload-dumper-go_1.2.2_linux_amd64.tar.gz
+          tar xzf pdd.tgz
+          chmod +x payload-dumper-go
+          ./payload-dumper-go -version
+
+      - name: Extract system.img from payload.bin
+        run: |
+          cd work
+          ./payload-dumper-go -o out payload.bin system
+          ls -lh out/
+
+      - name: Convert sparse image to raw (if needed)
+        run: |
+          cd work
+          file out/system.img
+          if file out/system.img | grep -qi "sparse"; then
+            sudo apt-get update && sudo apt-get install -y android-sdk-libsparse-utils
+            simg2img out/system.img out/system-raw.img
+            mv out/system-raw.img out/system.img
+          fi
+          ls -lh out/system.img
+
+      - name: Mount and deep-slim system image
+        run: |
+          set -e
+          sudo apt-get install -y e2fsprogs
+          mkdir -p /mnt/system
+          sudo mount -o loop work/out/system.img /mnt/system
+          echo "=== root of system.img ==="
+          ls /mnt/system/
+
+          # 定位 ROOT（兼容 system-as-root 两种布局）
+          if [ -d /mnt/system/system/priv-app ]; then
+            ROOT=/mnt/system/system
+          else
+            ROOT=/mnt/system
+          fi
+          echo "=== using ROOT=$ROOT ==="
+
+          # ============================================================
+          # 第 1 层：删除无用应用（和之前一样）
+          # ============================================================
+          echo "=== [1/5] 删除无用应用 ==="
+          for app in \
+            Dialer Messaging Contacts CellBroadcastReceiver Stk \
+            EmergencyInfo PrintSpooler BookmarkProvider BasicDreams \
+            PhotoTable EasterEgg ManagedProvisioning MtpApplication Mood; do
+            if [ -d "$ROOT/priv-app/$app" ]; then
+              sudo rm -rf "$ROOT/priv-app/$app"
+              echo "  removed priv-app/$app"
+            fi
+          done
+          for app in \
+            Gallery2 Gallery Camera2 Camera Calculator2 SoundRecorder \
+            Email Jelly HTMLViewer Music TwelveMonkeys LatinIme \
+            LiveWallpapers PhotoWallpapers PhaseBeam NoiseField Galaxy4; do
+            if [ -d "$ROOT/app/$app" ]; then
+              sudo rm -rf "$ROOT/app/$app"
+              echo "  removed app/$app"
+            fi
+          done
+
+          # ============================================================
+          # 第 2 层：删除多媒体文件（铃声/壁纸/字体）
+          # ============================================================
+          echo "=== [2/5] 删除多媒体文件 ==="
+          sudo rm -rf $ROOT/media/audio/Ringtones/*  2>/dev/null || true
+          sudo rm -rf $ROOT/media/audio/Notifications/* 2>/dev/null || true
+          sudo rm -rf $ROOT/media/audio/Alarms/* 2>/dev/null || true
+          sudo rm -rf $ROOT/wallpaper 2>/dev/null || true
+          sudo rm -rf $ROOT/app/NoisyNight 2>/dev/null || true
+          if [ -d $ROOT/fonts ]; then
+            for f in $ROOT/fonts/*.ttf $ROOT/fonts/*.otf; do
+              name=$(basename "$f")
+              case "$name" in
+                NotoSans*|Roboto*|DroidSans*|*.ttc) ;;
+                *) sudo rm -f "$f" ;;
+              esac
+            done
+          fi
+
+          # ============================================================
+          # 第 3 层：删除不需要的系统服务 .rc 文件（源头禁用）
+          # ============================================================
+          echo "=== [3/5] 禁用不需要的系统服务 ==="
+          INIT_DIR=$ROOT/etc/init
+          if [ -d "$INIT_DIR" ]; then
+            ls $INIT_DIR/ | head -30
+            # 删除机顶盒不需要的服务启动脚本
+            for rc in \
+              nfc.rc \
+              nfc_nci.rc \
+              sensors.rc \
+              sensors_hidl.rc \
+              vibrator.rc \
+              lights.rc \
+              gps.rc \
+              location.rc \
+              tv.rc \
+              tvhal.rc \
+              ir.rc \
+              consumerir.rc \
+              gateway.rc \
+              printspooler.rc; do
+              if [ -f "$INIT_DIR/$rc" ]; then
+                sudo rm -f "$INIT_DIR/$rc"
+                echo "  removed init/$rc"
+              fi
+            done
+          else
+            echo "  no init dir found at $INIT_DIR"
+          fi
+
+          # ============================================================
+          # 第 4 层：删除不需要的系统二进制（HAL/守护进程）
+          # ============================================================
+          echo "=== [4/5] 删除不需要的系统二进制 ==="
+          BIN_DIR=$ROOT/bin
+          if [ -d "$BIN_DIR" ]; then
+            for bin in \
+              nfc_nci_nxp \
+              nfc_nci_broadcom \
+              sensors-hal \
+              sensors.ssoc \
+              sensors.qcom \
+              vibrator-hal \
+              lights.msm8998 \
+              lights.qcom \
+              loc_launcher \
+              lowi-server \
+              ir-MSMS \
+              consumerir \
+              tvhal \
+              tv_service \
+              wiredaccessory; do
+              if [ -f "$BIN_DIR/$bin" ]; then
+                sudo rm -f "$BIN_DIR/$bin"
+                echo "  removed bin/$bin"
+              fi
+            done
+          else
+            echo "  no bin dir found at $BIN_DIR"
+          fi
+
+          # ============================================================
+          # 第 5 层：深度 build.prop 调优（源头）
+          # ============================================================
+          echo "=== [5/5] 深度 build.prop 调优 ==="
+          PROP=$ROOT/build.prop
+          # 清除旧值再追加（prop 取最后一行）
+          sudo sed -i '/^ro.config.low_ram=/d;/^ro.config.max_starting_bg=/d;/^dalvik.vm.heapsize=/d;/^dalvik.vm.heapgrowthlimit=/d;/^dalvik.vm.heapstartsize=/d;/^persist.traced.enable=/d;/^ro.logd.size=/d;/^ro.debuggable=/d;/^ro.secure=/d;/^wifi.driver.interface=/d' $PROP
+
+          echo 'ro.config.low_ram=true'                    | sudo tee -a $PROP
+          echo 'ro.config.max_starting_bg=2'               | sudo tee -a $PROP
+          echo 'ro.config.low_ram_single_process_limit=true' | sudo tee -a $PROP
+          echo 'dalvik.vm.heapsize=256m'                   | sudo tee -a $PROP
+          echo 'dalvik.vm.heapgrowthlimit=128m'            | sudo tee -a $PROP
+          echo 'dalvik.vm.heapstartsize=8m'               | sudo tee -a $PROP
+          echo 'dalvik.vm.heaptargetutilization=0.75'      | sudo tee -a $PROP
+          echo 'persist.traced.enable=0'                    | sudo tee -a $PROP
+          echo 'ro.logd.size=128K'                         | sudo tee -a $PROP
+          echo 'ro.debuggable=0'                           | sudo tee -a $PROP
+          echo 'telephony.registry.powerOn=false'          | sudo tee -a $PROP
+          echo 'ro.setupwizard.mode=DISABLED'              | sudo tee -a $PROP
+
+          echo "=== 剩余 priv-app / app 清单 ==="
+          echo "--- priv-app ---"
+          ls $ROOT/priv-app/
+          echo "--- app ---"
+          ls $ROOT/app/
+          echo "--- init/ ---"
+          ls $INIT_DIR/ 2>/dev/null | head -20
+
+          sudo umount /mnt/system
+          echo "=== slim v2 done ==="
+          ls -lh work/out/system.img
+
+      - name: Upload slimmed system.img
+        uses: actions/upload-artifact@v4
+        with:
+          name: system-slim-v2-joan
+          path: work/out/system.img
+          if-no-files-found: error
