@@ -1,30 +1,13 @@
-﻿From f4499c9daee972d23b957798cab5e6df2e1b3c66 Mon Sep 17 00:00:00 2001
-From: patch <patch@local>
-Date: Mon, 28 Sep 2026 18:46:47 +0800
-Subject: [PATCH] patched
-
----
- mdss_hdmi_edid.c | 50 +++++++++++++++++++++++++++++++++++++++++++++---
- 1 file changed, 47 insertions(+), 3 deletions(-)
-
-diff --git a/mdss_hdmi_edid.c b/mdss_hdmi_edid.c
-index 5d27f96..1a4b158 100644
---- a/mdss_hdmi_edid.c
-+++ b/mdss_hdmi_edid.c
-@@ -916,6 +916,38 @@ static const u8 *hdmi_edid_find_hfvsdb(const u8 *in_buf)
+diff --git a/drivers/video/fbdev/msm/mdss_hdmi_edid.c b/drivers/video/fbdev/msm/mdss_hdmi_edid.c
+index 5d27f96..3c46eb1 100644
+--- a/drivers/video/fbdev/msm/mdss_hdmi_edid.c
++++ b/drivers/video/fbdev/msm/mdss_hdmi_edid.c
+@@ -916,6 +916,27 @@ static const u8 *hdmi_edid_find_hfvsdb(const u8 *in_buf)
  	return vsd;
  }
  
 +/*
 + * hdmi_edid_is_dci_4k - check whether a timing info is DCI 4K (4096x2160)
-+ *
-+ * DCI 4K (4096x2160) is the digital-cinema variant of 4K.  Most consumer
-+ * TVs are native 3840x2160 (UHD) panels, but their EDID (or the EDID
-+ * shipped inside many USB-C to HDMI adapters) advertises 4096x2160 and
-+ * often lists it as the preferred mode.  The display driver then outputs
-+ * DCI 4K and the TV reports "4096x2160" although the panel is standard
-+ * UHD.  These modes are dropped so that standard 3840x2160 UHD modes are
-+ * used instead.
 + */
 +static bool hdmi_edid_is_dci_4k(struct msm_hdmi_mode_timing_info *timing)
 +{
@@ -33,9 +16,6 @@ index 5d27f96..1a4b158 100644
 +
 +/*
 + * hdmi_edid_sanitize_preferred - never prefer a DCI 4K video format
-+ *
-+ * If the sink advertised a 4096x2160 mode as preferred/native, fall back
-+ * to the standard UHD 3840x2160@60 (VIC 97) format instead.
 + */
 +static u32 hdmi_edid_sanitize_preferred(u32 video_format)
 +{
@@ -50,7 +30,7 @@ index 5d27f96..1a4b158 100644
  static void hdmi_edid_set_y420_support(struct hdmi_edid_ctrl *edid_ctrl,
  				  u32 video_format)
  {
-@@ -955,6 +987,12 @@ static void hdmi_edid_add_sink_y420_format(struct hdmi_edid_ctrl *edid_ctrl,
+@@ -955,6 +976,12 @@ static void hdmi_edid_add_sink_y420_format(struct hdmi_edid_ctrl *edid_ctrl,
  		return;
  	}
  
@@ -63,7 +43,7 @@ index 5d27f96..1a4b158 100644
  	if (!sink) {
  		DEV_ERR("%s: invalid input\n", __func__);
  		return;
-@@ -1715,6 +1753,12 @@ static void hdmi_edid_add_sink_video_format(struct hdmi_edid_ctrl *edid_ctrl,
+@@ -1715,6 +1742,12 @@ static void hdmi_edid_add_sink_video_format(struct hdmi_edid_ctrl *edid_ctrl,
  		return;
  	}
  
@@ -76,7 +56,7 @@ index 5d27f96..1a4b158 100644
  	DEV_DBG("%s: EDID: format: %d [%s], %s\n", __func__,
  		video_format, msm_hdmi_mode_2string(video_format),
  		supported ? "Supported" : "Not-Supported");
-@@ -2078,7 +2122,7 @@ static void hdmi_edid_get_display_mode(struct hdmi_edid_ctrl *edid_ctrl)
+@@ -2078,7 +2111,7 @@ static void hdmi_edid_get_display_mode(struct hdmi_edid_ctrl *edid_ctrl)
  			/* Make a note of the preferred video format */
  			if (i == 0)
  				sink_data->preferred_video_format =
@@ -85,7 +65,7 @@ index 5d27f96..1a4b158 100644
  
  			if (i < 16) {
  				sink_data->disp_multi_3d_mode_list[i]
-@@ -2118,7 +2162,7 @@ static void hdmi_edid_get_display_mode(struct hdmi_edid_ctrl *edid_ctrl)
+@@ -2118,7 +2151,7 @@ static void hdmi_edid_get_display_mode(struct hdmi_edid_ctrl *edid_ctrl)
  			/* Make a note of the preferred video format */
  			if (i == 0)
  				sink_data->preferred_video_format =
@@ -94,7 +74,7 @@ index 5d27f96..1a4b158 100644
  		}
  		desc_offset += 0x12;
  		++i;
-@@ -2152,7 +2196,7 @@ static void hdmi_edid_get_display_mode(struct hdmi_edid_ctrl *edid_ctrl)
+@@ -2152,7 +2185,7 @@ static void hdmi_edid_get_display_mode(struct hdmi_edid_ctrl *edid_ctrl)
  				/* Make a note of the preferred video format */
  				if (i == 0) {
  					sink_data->preferred_video_format =
@@ -103,6 +83,3 @@ index 5d27f96..1a4b158 100644
  				}
  			}
  			desc_offset += 0x12;
--- 
-2.55.0.windows.3
-
