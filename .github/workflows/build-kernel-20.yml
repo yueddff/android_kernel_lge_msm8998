@@ -11,7 +11,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout kernel (lineage-20)
         uses: actions/checkout@v4
@@ -29,14 +29,16 @@ jobs:
           git apply --verbose 0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch
           echo "4K patch applied OK"
 
-      - name: Setup Clang toolchain
+      - name: Install dependencies and Clang toolchain
         run: |
-          git clone --depth=1 https://github.com/kdrag0n/proton_clang.git clang
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex build-essential libssl-dev libncurses5-dev zip \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu clang
+          clang --version | head -1
 
       - name: Configure kernel
         run: |
           cd kernel
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- REAL_CC=clang \
             lineageos_joan_defconfig
@@ -44,7 +46,6 @@ jobs:
       - name: Build kernel
         run: |
           cd kernel
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- REAL_CC=clang \
             -j$(nproc) Image.gz-dtb KCFLAGS="-Wno-error" CONFIG_WERROR=n
