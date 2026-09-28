@@ -1,0 +1,135 @@
+# LineageOS 17.1 (Android 10) 内核构建 + 4K 补丁 + 重打包 boot.img
+# 源: SGCMarkus/android_kernel_lge_msm8998 @ lineage-17.1 (LG V30 joan, 内核 4.4.153)
+# 用法（和 20/22 版完全一样）：
+#   1. 把新生成的 4K 补丁上传到 yueddff/android_kernel_lge_msm8998 根目录:
+#      0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch
+#   2. 把 LineageOS 17.1 ROM 里的 boot.img 命名为 boot17.img 上传到仓库根目录
+#   3. 本文件上传到 .github/workflows/build-kernel-17.1.yml
+#   4. Actions → Build Kernel 17.1 + Repack Boot → Run workflow → 下载 boot17-4k 产物
+# 注意: defconfig 是 lineageos_h930_defconfig (17.1 分支叫这个名字, 不是 lineageos_joan_defconfig)
+name: Build Kernel 17.1 + Repack Boot
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout kernel (lineage-17.1)
+        uses: actions/checkout@v4
+        with:
+          repository: SGCMarkus/android_kernel_lge_msm8998
+          ref: lineage-17.1
+          path: kernel
+
+      - name: Download 4K EDID patch (lineage-17.1 adapted) and apply
+        run: |
+          cd kernel
+          curl -fL -o 0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch \
+            "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch" \
+            || { echo "patch not found - upload 0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch to your repo first"; exit 1; }
+          git apply --verbose 0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch
+          echo "4K patch applied OK"
+
+      - name: Defensive tspdrv fix (only if the file and bug exist)
+        run: |
+          cd kernel
+          python3 <<'PY'
+          import os
+          p = 'include/uapi/linux/tspdrv.h'
+          if os.path.exists(p):
+              s = open(p).read()
+              if '#include <sys/ioctl.h>' in s:
+                  s = s.replace('#include <sys/ioctl.h>',
+                      '#ifdef __KERNEL__\n#include "ioctl.h"\n#else // not __KERNEL__\n#include <sys/ioctl.h>\n#endif // __KERNEL__', 1)
+                  open(p, 'w').write(s)
+                  print('tspdrv.h fixed')
+              else:
+                  print('tspdrv.h present, no bug')
+          else:
+              print('tspdrv.h not present in lineage-17.1, skip')
+          PY
+
+      - name: Install dependencies and Clang toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex build-essential libssl-dev libncurses5-dev zip \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi g++-arm-linux-gnueabi clang
+          clang --version | head -1
+
+      - name: Configure kernel (lineageos_h930_defconfig)
+        run: |
+          cd kernel
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            REAL_CC=clang lineageos_h930_defconfig
+
+      - name: Build kernel
+        run: |
+          cd kernel
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            REAL_CC=clang -j$(nproc) Image.gz-dtb KCFLAGS="-Wno-error" CONFIG_WERROR=n
+
+      - name: Download boot17.img (LineageOS 17.1 boot image from your repo)
+        run: |
+          curl -fL -o boot.img \
+            "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/boot17.img" \
+            || { echo "boot17.img not found - upload LineageOS 17.1 ROM boot.img as boot17.img to your repo"; exit 1; }
+
+      - name: Repack boot image (replace kernel, keep ramdisk)
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          python3 <<'PY'
+          import struct
+
+          def align(x, n):
+              return (x + n - 1) // n * n
+
+          boot = open('boot.img', 'rb').read()
+          kernel = open('kernel/out/arch/arm64/boot/Image.gz-dtb', 'rb').read()
+
+          assert boot[:8] == b'ANDROID!', 'not a boot image'
+
+          ks, ka, rs, ra, ss, sa, ta, ps = struct.unpack_from('<8I', boot, 8)
+
+          kernel_off = ps
+          ramdisk_off = kernel_off + align(ks, ps)
+          second_off = ramdisk_off + align(rs, ps)
+
+          new_ks = len(kernel)
+          new_ramdisk_off = kernel_off + align(new_ks, ps)
+          new_second_off = new_ramdisk_off + align(rs, ps)
+
+          out = boot[:kernel_off] + kernel
+          out += b'\x00' * (new_ramdisk_off - len(out))
+          out += boot[ramdisk_off:second_off]
+          out += b'\x00' * (new_second_off - len(out))
+          if ss:
+              out += boot[second_off:second_off + ss]
+
+          # patch kernel_size in header
+          h = bytearray(out[:ps])
+          struct.pack_into('<I', h, 8, new_ks)
+
+          with open('new-boot.img', 'wb') as f:
+              f.write(bytes(h) + out[ps:])
+
+          print('kernel bytes:', new_ks)
+          print('ramdisk bytes:', rs)
+          print('page size:', ps)
+          print('new-boot.img written')
+          PY
+
+      - name: Verify output
+        run: |
+          ls -l "$GITHUB_WORKSPACE/new-boot.img"
+          python3 -c "import struct; d=open('$GITHUB_WORKSPACE/new-boot.img','rb').read(); print('magic:', d[:8]); print('kernel size:', struct.unpack_from('<I', d, 8)[0])"
+
+      - name: Upload boot
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot17-4k
+          path: new-boot.img
