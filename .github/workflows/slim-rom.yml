@@ -22,7 +22,7 @@ jobs:
       - name: Download ROM zip
         run: |
           mkdir -p work
-          curl -L --fail -o work/rom.zip "${{ github.event.inputs.rom_url }}"
+          curl -L --fail -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" -o work/rom.zip "${{ github.event.inputs.rom_url }}"
           ls -lh work/rom.zip
 
       - name: Extract payload.bin from zip
