@@ -72,14 +72,16 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             REAL_CC=clang -j$(nproc) Image.gz-dtb \
             KCFLAGS="-Wno-error -Wno-error=unused-but-set-variable" CONFIG_WERROR=n \
-            HOSTCFLAGS="-fcommon" > build.log 2>&1
+            HOSTCFLAGS="-fcommon" > build.log 2>&1 && rc=0 || rc=$?
           rc=$?
           echo "=== build exit code: $rc ==="
           if [ $rc -ne 0 ]; then
             echo "=== REAL ERRORS (filtered from objdump noise) ==="
             grep -iE "error:|Error [0-9]|undefined reference|No such file|fatal" build.log | grep -v "objdump" | head -40
-            echo "=== last 30 lines of build.log ==="
-            tail -30 build.log
+            echo "=== last 50 lines of build.log ==="
+            tail -50 build.log
+            echo "=== uploading build.log for debug ==="
+            cp build.log "$GITHUB_WORKSPACE/build.log"
             exit $rc
           fi
 
@@ -138,7 +140,11 @@ jobs:
           python3 -c "import struct; d=open('$GITHUB_WORKSPACE/new-boot.img','rb').read(); print('magic:', d[:8]); print('kernel size:', struct.unpack_from('<I', d, 8)[0])"
 
       - name: Upload boot
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: boot17-4k
-          path: new-boot.img
+          path: |
+            new-boot.img
+            build.log
+          if-no-files-found: ignore
