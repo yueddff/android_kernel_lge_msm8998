@@ -33,22 +33,23 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison flex build-essential libssl-dev libncurses5-dev zip \
-            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu clang
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi g++-arm-linux-gnueabi clang
           clang --version | head -1
 
       - name: Configure kernel
         run: |
           cd kernel
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- REAL_CC=clang \
-            lineageos_joan_defconfig
+            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            REAL_CC=clang lineageos_joan_defconfig
 
       - name: Build kernel
         run: |
           cd kernel
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- REAL_CC=clang \
-            -j$(nproc) Image.gz-dtb KCFLAGS="-Wno-error" CONFIG_WERROR=n
+            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            REAL_CC=clang -j$(nproc) Image.gz-dtb KCFLAGS="-Wno-error" CONFIG_WERROR=n
 
       - name: Download boot20.img (LineageOS 20 boot image from your repo)
         run: |
