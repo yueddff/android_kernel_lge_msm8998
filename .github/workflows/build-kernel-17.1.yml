@@ -71,7 +71,8 @@ jobs:
           cd kernel
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            REAL_CC=clang -j$(nproc) Image.gz-dtb KCFLAGS="-Wno-error" CONFIG_WERROR=n
+            REAL_CC=clang -j$(nproc) Image.gz-dtb KCFLAGS="-Wno-error" CONFIG_WERROR=n \
+            HOSTCFLAGS="-fcommon"
 
       - name: Download boot17.img (LineageOS 17.1 boot image from your repo)
         run: |
