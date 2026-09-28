@@ -59,45 +59,45 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE"
           python3 <<'PY'
-import struct
+          import struct
 
-def align(x, n):
-    return (x + n - 1) // n * n
+          def align(x, n):
+              return (x + n - 1) // n * n
 
-boot = open('boot.img', 'rb').read()
-kernel = open('kernel/out/arch/arm64/boot/Image.gz-dtb', 'rb').read()
+          boot = open('boot.img', 'rb').read()
+          kernel = open('kernel/out/arch/arm64/boot/Image.gz-dtb', 'rb').read()
 
-assert boot[:8] == b'ANDROID!', 'not a boot image'
+          assert boot[:8] == b'ANDROID!', 'not a boot image'
 
-ks, ka, rs, ra, ss, sa, ta, ps = struct.unpack_from('<8I', boot, 8)
+          ks, ka, rs, ra, ss, sa, ta, ps = struct.unpack_from('<8I', boot, 8)
 
-kernel_off = ps
-ramdisk_off = kernel_off + align(ks, ps)
-second_off = ramdisk_off + align(rs, ps)
+          kernel_off = ps
+          ramdisk_off = kernel_off + align(ks, ps)
+          second_off = ramdisk_off + align(rs, ps)
 
-new_ks = len(kernel)
-new_ramdisk_off = kernel_off + align(new_ks, ps)
-new_second_off = new_ramdisk_off + align(rs, ps)
+          new_ks = len(kernel)
+          new_ramdisk_off = kernel_off + align(new_ks, ps)
+          new_second_off = new_ramdisk_off + align(rs, ps)
 
-out = boot[:kernel_off] + kernel
-out += b'\x00' * (new_ramdisk_off - len(out))
-out += boot[ramdisk_off:second_off]
-out += b'\x00' * (new_second_off - len(out))
-if ss:
-    out += boot[second_off:second_off + ss]
+          out = boot[:kernel_off] + kernel
+          out += b'\x00' * (new_ramdisk_off - len(out))
+          out += boot[ramdisk_off:second_off]
+          out += b'\x00' * (new_second_off - len(out))
+          if ss:
+              out += boot[second_off:second_off + ss]
 
-# patch kernel_size in header
-h = bytearray(out[:ps])
-struct.pack_into('<I', h, 8, new_ks)
+          # patch kernel_size in header
+          h = bytearray(out[:ps])
+          struct.pack_into('<I', h, 8, new_ks)
 
-with open('new-boot.img', 'wb') as f:
-    f.write(bytes(h) + out[ps:])
+          with open('new-boot.img', 'wb') as f:
+              f.write(bytes(h) + out[ps:])
 
-print('kernel bytes:', new_ks)
-print('ramdisk bytes:', rs)
-print('page size:', ps)
-print('new-boot.img written')
-PY
+          print('kernel bytes:', new_ks)
+          print('ramdisk bytes:', rs)
+          print('page size:', ps)
+          print('new-boot.img written')
+          PY
 
       - name: Verify output
         run: |
