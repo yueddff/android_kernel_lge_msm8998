@@ -70,8 +70,18 @@ jobs:
           cd kernel
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            REAL_CC=clang -j$(nproc) Image.gz-dtb KCFLAGS="-Wno-error" CONFIG_WERROR=n \
-            HOSTCFLAGS="-fcommon"
+            REAL_CC=clang -j$(nproc) Image.gz-dtb \
+            KCFLAGS="-Wno-error -Wno-error=unused-but-set-variable" CONFIG_WERROR=n \
+            HOSTCFLAGS="-fcommon" > build.log 2>&1
+          rc=$?
+          echo "=== build exit code: $rc ==="
+          if [ $rc -ne 0 ]; then
+            echo "=== REAL ERRORS (filtered from objdump noise) ==="
+            grep -iE "error:|Error [0-9]|undefined reference|No such file|fatal" build.log | grep -v "objdump" | head -40
+            echo "=== last 30 lines of build.log ==="
+            tail -30 build.log
+            exit $rc
+          fi
 
       - name: Download boot17.img (LineageOS 17.1 boot image from your repo)
         run: |
