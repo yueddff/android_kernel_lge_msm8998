@@ -24,7 +24,7 @@ jobs:
         run: |
           cd kernel
           curl -fL -o 0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch \
-            "https://raw.githubusercontent.com/12yuedf/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch" \
+            "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch" \
             || { echo "patch not found in repo - upload it first"; exit 1; }
           git apply --verbose 0001-sde-hdmi-edid-drop-DCI-4K-force-UHD-3840x2160.patch
           echo "4K patch applied OK"
@@ -52,7 +52,7 @@ jobs:
       - name: Download boot20.img (LineageOS 20 boot image from your repo)
         run: |
           curl -fL -o boot.img \
-            "https://raw.githubusercontent.com/12yuedf/android_kernel_lge_msm8998/lineage-22.2/boot20.img" \
+            "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/boot20.img" \
             || { echo "boot20.img not found - upload LineageOS 20 boot.img as boot20.img to your repo"; exit 1; }
 
       - name: Repack boot image (replace kernel, keep ramdisk)
