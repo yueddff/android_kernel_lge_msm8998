@@ -1,12 +1,11 @@
 # LineageOS 17.1 (Android 10) 内核构建 + 4K 补丁 + 重打包 boot.img
 # 源: SGCMarkus/android_kernel_lge_msm8998 @ lineage-17.1 (LG V30 joan, 内核 4.4.153)
-# 用法（和 20/22 版完全一样）：
-#   1. 把新生成的 4K 补丁上传到 yueddff/android_kernel_lge_msm8998 根目录:
-#      0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch
+# 用法（和 20 版完全一样）：
+#   1. 把补丁上传到仓库根目录: 0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch
 #   2. 把 LineageOS 17.1 ROM 里的 boot.img 命名为 boot17.img 上传到仓库根目录
 #   3. 本文件上传到 .github/workflows/build-kernel-17.1.yml
 #   4. Actions → Build Kernel 17.1 + Repack Boot → Run workflow → 下载 boot17-4k 产物
-# 注意: defconfig 是 lineageos_h930_defconfig (17.1 分支叫这个名字, 不是 lineageos_joan_defconfig)
+# 注意: defconfig 是 lineageos_h930_defconfig (17.1 分支叫这个名字)
 name: Build Kernel 17.1 + Repack Boot
 
 on:
@@ -23,16 +22,16 @@ jobs:
           ref: lineage-17.1
           path: kernel
 
-      - name: Download 4K EDID patch (lineage-17.1 adapted) and apply
+      - name: Download 4K EDID patch from repo and apply
         run: |
           cd kernel
           curl -fL -o 0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch \
             "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch" \
-            || { echo "patch not found - upload 0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch to your repo first"; exit 1; }
+            || { echo "patch not found in repo - upload it first"; exit 1; }
           git apply --verbose 0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch
           echo "4K patch applied OK"
 
-      - name: Defensive tspdrv fix (only if the file and bug exist)
+      - name: Defensive tspdrv fix (only if file exists)
         run: |
           cd kernel
           python3 <<'PY'
@@ -42,13 +41,13 @@ jobs:
               s = open(p).read()
               if '#include <sys/ioctl.h>' in s:
                   s = s.replace('#include <sys/ioctl.h>',
-                      '#ifdef __KERNEL__\n#include "ioctl.h"\n#else // not __KERNEL__\n#include <sys/ioctl.h>\n#endif // __KERNEL__', 1)
+                      '#ifdef __KERNEL__\n#include "ioctl.h"\n#else\n#include <sys/ioctl.h>\n#endif', 1)
                   open(p, 'w').write(s)
                   print('tspdrv.h fixed')
               else:
                   print('tspdrv.h present, no bug')
           else:
-              print('tspdrv.h not present in lineage-17.1, skip')
+              print('tspdrv.h not in 17.1, skip')
           PY
 
       - name: Install dependencies and Clang toolchain
@@ -59,7 +58,7 @@ jobs:
             gcc-arm-linux-gnueabi g++-arm-linux-gnueabi clang
           clang --version | head -1
 
-      - name: Configure kernel (lineageos_h930_defconfig)
+      - name: Configure kernel
         run: |
           cd kernel
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -78,7 +77,7 @@ jobs:
         run: |
           curl -fL -o boot.img \
             "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/boot17.img" \
-            || { echo "boot17.img not found - upload LineageOS 17.1 ROM boot.img as boot17.img to your repo"; exit 1; }
+            || { echo "boot17.img not found - upload LineageOS 17.1 boot.img as boot17.img to your repo"; exit 1; }
 
       - name: Repack boot image (replace kernel, keep ramdisk)
         run: |
@@ -111,7 +110,6 @@ jobs:
           if ss:
               out += boot[second_off:second_off + ss]
 
-          # patch kernel_size in header
           h = bytearray(out[:ps])
           struct.pack_into('<I', h, 8, new_ks)
 
