@@ -63,6 +63,14 @@ jobs:
           sudo ln -sf /usr/bin/arm-linux-gnueabi-g++-9 /usr/bin/arm-linux-gnueabi-g++
           aarch64-linux-gnu-gcc --version | head -1
 
+      - name: Setup Python 2.7 (4.4 kernel build scripts require python2)
+        uses: actions/setup-python@v4
+        with:
+          python-version: '2.7'
+
+      - name: Verify python2
+        run: python2 --version && which python2
+
       - name: Configure kernel (disable broken VIDC driver)
         run: |
           cd kernel
