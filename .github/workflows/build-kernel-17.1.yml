@@ -1,64 +1,151 @@
-# Probe: LineageOS 官方内核 lineage-17.1（joan）
-# 目的：编译前确认三件事，避免编译一小时才发现问题
-#   1. 官方仓库是否有 lineage-17.1 分支（checkout 失败即无）
-#   2. 正确的 defconfig 名称（joan/h930/msm8998 候选）
-#   3. 4K 补丁能否直接 git apply 到官方源码
-# 用法：上传到仓库 .github/workflows/，Actions → Probe Official Kernel 17.1 → Run workflow
-# 结果：下载 probe-report artifact，把 probe.txt 内容发给助手
-name: Probe Official Kernel 17.1
+# LineageOS 17.1 (Android 10) 内核构建 + 4K 补丁 + GCC9 编译 + 重打包 boot.img
+# 源: SGCMarkus/android_kernel_lge_msm8998 @ lineage-17.1 (LG V30 joan, 内核 4.4.153)
+# 关键变化: 编译器 clang -> GCC 9
+#   原因: ROM 自带内核为 GCC 编译，插坞+WiFi 正常；clang 编译同源码后插坞+WiFi 崩溃。
+#   对齐 ROM 的编译方式，保留 4K 补丁(3840x2160 UHD)。
+# 用法（和之前完全一样）：
+#   1. 本文件上传到 .github/workflows/build-kernel-17.1-gcc9.yml
+#   2. 仓库 lineage-22.2 分支里已有 0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch 和 boot17.img
+#   3. Actions → Build Kernel 17.1 GCC9 → Run workflow → 下载 boot17-4k-gcc9 产物
+name: Build Kernel 17.1 GCC9 + 4K Patch + Repack
 
 on:
   workflow_dispatch:
 
 jobs:
-  probe:
+  build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Clone official kernel (lineage-17.1)
+      - name: Checkout kernel (SGCMarkus lineage-17.1)
         uses: actions/checkout@v4
         with:
-          repository: LineageOS/android_kernel_lge_msm8998
+          repository: SGCMarkus/android_kernel_lge_msm8998
           ref: lineage-17.1
           path: kernel
 
-      - name: Probe defconfig / patch anchors / apply test
+      - name: Download 4K EDID patch and apply
         run: |
           cd kernel
-          {
-            echo "=== git head ==="
-            git log -1 --oneline
-            echo
-            echo "=== defconfig candidates (joan/h93/msm8998) ==="
-            ls arch/arm64/configs/ 2>/dev/null | grep -iE 'joan|h93|h99|msm8998' || echo "(none matched)"
-            echo
-            echo "=== all defconfigs (head 40) ==="
-            ls arch/arm64/configs/ 2>/dev/null | head -40
-            echo
-            echo "=== mdss_hdmi_edid.c ==="
-            ls -l drivers/video/fbdev/msm/mdss_hdmi_edid.c 2>&1
-            echo
-            echo "=== anchors (patch context lines) ==="
-            grep -nE "hdmi_edid_find_hfvsdb|hdmi_edid_set_y420_support|hdmi_edid_add_sink_y420_format|hdmi_edid_add_sink_video_format|hdmi_edid_get_display_mode|preferred_video_format" \
-              drivers/video/fbdev/msm/mdss_hdmi_edid.c 2>/dev/null | head -50
-            echo
-            echo "=== patch apply test ==="
-            curl -fsSL -o /tmp/p.patch \
-              "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch" \
-              && echo "patch downloaded OK" || echo "patch download FAILED"
-            if [ -s /tmp/p.patch ]; then
-              if git apply --check /tmp/p.patch; then
-                echo "PATCH_APPLY=OK"
-              else
-                echo "PATCH_APPLY=FAILED"
-                git apply --verbose /tmp/p.patch 2>&1 | head -30
-              fi
-            fi
-          } > /tmp/probe.txt 2>&1
-          cp /tmp/probe.txt "$GITHUB_WORKSPACE/probe.txt"
-          cat "$GITHUB_WORKSPACE/probe.txt"
+          curl -fL -o 0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch \
+            "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch" \
+            || { echo "patch not found in repo - upload it first"; exit 1; }
+          git apply --verbose 0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch
+          echo "4K patch applied OK"
 
-      - name: Upload probe report
+      - name: Defensive tspdrv fix (only if file exists)
+        run: |
+          cd kernel
+          python3 <<'PY'
+          import os
+          p = 'include/uapi/linux/tspdrv.h'
+          if os.path.exists(p):
+              s = open(p).read()
+              if '#include <sys/ioctl.h>' in s:
+                  s = s.replace('#include <sys/ioctl.h>',
+                      '#ifdef __KERNEL__\n#include "ioctl.h"\n#else\n#include <sys/ioctl.h>\n#endif', 1)
+                  open(p, 'w').write(s)
+                  print('tspdrv.h fixed')
+              else:
+                  print('tspdrv.h present, no bug')
+          else:
+              print('tspdrv.h not in 17.1, skip')
+          PY
+
+      - name: Install GCC-9 toolchain (aarch64 + arm32)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex build-essential libssl-dev libncurses5-dev zip \
+            gcc-9-aarch64-linux-gnu g++-9-aarch64-linux-gnu \
+            gcc-9-arm-linux-gnueabi g++-9-arm-linux-gnueabi
+          sudo ln -sf /usr/bin/aarch64-linux-gnu-gcc-9 /usr/bin/aarch64-linux-gnu-gcc
+          sudo ln -sf /usr/bin/aarch64-linux-gnu-g++-9 /usr/bin/aarch64-linux-gnu-g++
+          sudo ln -sf /usr/bin/arm-linux-gnueabi-gcc-9 /usr/bin/arm-linux-gnueabi-gcc
+          sudo ln -sf /usr/bin/arm-linux-gnueabi-g++-9 /usr/bin/arm-linux-gnueabi-g++
+          aarch64-linux-gnu-gcc --version | head -1
+
+      - name: Configure kernel (disable broken VIDC driver)
+        run: |
+          cd kernel
+          make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- lineageos_h930_defconfig
+          ./scripts/config --file out/.config -d CONFIG_MSM_VIDC -d CONFIG_MSM_VIDC_VENC -d CONFIG_MSM_VIDC_VDEC
+          make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- olddefconfig
+          echo "VIDC disabled"
+
+      - name: Build kernel (GCC-9)
+        run: |
+          cd kernel
+          make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- -j$(nproc) Image.gz-dtb \
+            KCFLAGS="-Wno-error -fcommon -Wno-error=unused-but-set-variable -Wno-error=misleading-indentation -Wno-error=enum-conversion -Wno-error=self-assign -Wno-error=fortify-source" \
+            HOSTCFLAGS="-fcommon" > build.log 2>&1 || true
+          echo "=== build finished, checking for errors ==="
+          grep -nE "error:|Error [0-9]|undefined reference|No such file" build.log | grep -v objdump | head -30
+          echo "=== last 20 lines ==="
+          tail -20 build.log
+          if [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "=== KERNEL NOT BUILT ==="
+            exit 1
+          fi
+          echo "=== KERNEL BUILT OK ==="
+
+      - name: Download boot17.img (LineageOS 17.1 boot image from repo)
+        run: |
+          curl -fL -o boot.img \
+            "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/boot17.img" \
+            || { echo "boot17.img not found - upload LineageOS 17.1 boot.img as boot17.img to your repo"; exit 1; }
+
+      - name: Repack boot image (replace kernel, keep ramdisk)
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          python3 <<'PY'
+          import struct
+
+          def align(x, n):
+              return (x + n - 1) // n * n
+
+          boot = open('boot.img', 'rb').read()
+          kernel = open('kernel/out/arch/arm64/boot/Image.gz-dtb', 'rb').read()
+
+          assert boot[:8] == b'ANDROID!', 'not a boot image'
+
+          ks, ka, rs, ra, ss, sa, ta, ps = struct.unpack_from('<8I', boot, 8)
+
+          kernel_off = ps
+          ramdisk_off = kernel_off + align(ks, ps)
+          second_off = ramdisk_off + align(rs, ps)
+
+          new_ks = len(kernel)
+          new_ramdisk_off = kernel_off + align(new_ks, ps)
+          new_second_off = new_ramdisk_off + align(rs, ps)
+
+          out = boot[:kernel_off] + kernel
+          out += b'\x00' * (new_ramdisk_off - len(out))
+          out += boot[ramdisk_off:second_off]
+          out += b'\x00' * (new_second_off - len(out))
+          if ss:
+              out += boot[second_off:second_off + ss]
+
+          h = bytearray(out[:ps])
+          struct.pack_into('<I', h, 8, new_ks)
+
+          with open('new-boot.img', 'wb') as f:
+              f.write(bytes(h) + out[ps:])
+
+          print('kernel bytes:', new_ks)
+          print('ramdisk bytes:', rs)
+          print('page size:', ps)
+          print('new-boot.img written')
+          PY
+
+      - name: Verify output
+        run: |
+          ls -l "$GITHUB_WORKSPACE/new-boot.img"
+          python3 -c "import struct; d=open('$GITHUB_WORKSPACE/new-boot.img','rb').read(); print('magic:', d[:8]); print('kernel size:', struct.unpack_from('<I', d, 8)[0])"
+
+      - name: Upload boot
         uses: actions/upload-artifact@v4
         with:
-          name: probe-report
-          path: probe.txt
+          name: boot17-4k-gcc9
+          path: new-boot.img
