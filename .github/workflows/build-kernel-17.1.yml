@@ -1,12 +1,21 @@
 # LineageOS 17.1 (Android 10) 内核构建 + 4K 补丁 + GCC9 编译 + 重打包 boot.img
 # 源: SGCMarkus/android_kernel_lge_msm8998 @ lineage-17.1 (LG V30 joan, 内核 4.4.153)
-# 关键变化: 编译器 clang -> GCC 9
-#   原因: ROM 自带内核为 GCC 编译，插坞+WiFi 正常；clang 编译同源码后插坞+WiFi 崩溃。
-#   对齐 ROM 的编译方式，保留 4K 补丁(3840x2160 UHD)。
-# runner: ubuntu-20.04（自带 python2.7，默认 gcc 9.x，bison/flex 版本更匹配 4.4 内核；
-#   22.04 无 python2 且 actions/setup-python 已不支持 2.7）
-# 用法（和之前完全一样）：
-#   1. 本文件上传到 .github/workflows/build-kernel-17.1-gcc9.yml
+#
+# 为什么 GCC9 + 本地验证过的关键修复（2026-09-29 已在本地 sgcmarkus_17.1 源码验证）：
+# 1. ROM 自带内核为 GCC 编译，插坞+WiFi 正常；clang 编译同源码后插坞+WiFi 崩溃。
+#    对齐 ROM 的编译方式（GCC），保留 4K 补丁(3840x2160 UHD)。
+# 2. runner 用 ubuntu-20.04：自带 python2.7，默认 gcc 9.x，bison/flex 版本匹配 4.4 内核。
+#    (22.04 无 python2，且 actions/setup-python 已不支持 2.7)
+# 3. 必须绕过 LG gcc-wrapper.py！Makefile 把 CC 包成 scripts/gcc-wrapper.py $(REAL_CC)，
+#    它用 python2 运行且白名单只有 4 条警告，GCC9 编译产生的新警告会全部被它拦截报错。
+#    本地实测 sed: CC = $(srctree)/scripts/gcc-wrapper.py $(REAL_CC) -> CC = $(REAL_CC)
+# 4. VIDC 真实符号是 CONFIG_MSM_VIDC_V4L2/_VMEM/_GOVERNORS（已查 17.1 源码 Kconfig），
+#    不是 CONFIG_MSM_VIDC/_VENC/_VDEC。
+# 5. KCFLAGS 只保留 GCC9 支持的 -Wno-error 项；-Wno-error=self-assign/fortify-source/
+#    enum-conversion 是 clang 专属选项，GCC9 不认识会直接 cc1 error。
+#
+# 用法：
+#   1. 本文件上传到 .github/workflows/build-kernel-17.1.yml（覆盖）
 #   2. 仓库 lineage-22.2 分支里已有 0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch 和 boot17.img
 #   3. Actions → Build Kernel 17.1 GCC9 → Run workflow → 下载 boot17-4k-gcc9 产物
 name: Build Kernel 17.1 GCC9 + 4K Patch + Repack
@@ -34,6 +43,14 @@ jobs:
           git apply --verbose 0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch
           echo "4K patch applied OK"
 
+      - name: Bypass LG gcc-wrapper.py (python2-only + 4-line warning whitelist would kill GCC9 build)
+        run: |
+          cd kernel
+          # 本地已验证：把 CC 从 gcc-wrapper.py 包壳改回真实 gcc
+          sed -i 's|\$(srctree)/scripts/gcc-wrapper.py \$(REAL_CC)|\$(REAL_CC)|' Makefile
+          grep -n "^CC[[:space:]]*=" Makefile
+          echo "gcc-wrapper bypassed (CC now points to REAL_CC)"
+
       - name: Defensive tspdrv fix (only if file exists)
         run: |
           cd kernel
@@ -53,44 +70,40 @@ jobs:
               print('tspdrv.h not in 17.1, skip')
           PY
 
-      - name: Install GCC-9 toolchain (aarch64 + arm32)
+      - name: Install GCC-9 toolchain + ensure python2 (20.04 ships python2.7)
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison flex build-essential libssl-dev libncurses5-dev zip \
             gcc-9-aarch64-linux-gnu g++-9-aarch64-linux-gnu \
-            gcc-9-arm-linux-gnueabi g++-9-arm-linux-gnueabi
+            gcc-9-arm-linux-gnueabi g++-9-arm-linux-gnueabi \
+            python2 || true
+          if ! command -v python2 >/dev/null && command -v python2.7 >/dev/null; then
+            sudo ln -sf "$(command -v python2.7)" /usr/bin/python2
+          fi
           sudo ln -sf /usr/bin/aarch64-linux-gnu-gcc-9 /usr/bin/aarch64-linux-gnu-gcc
           sudo ln -sf /usr/bin/aarch64-linux-gnu-g++-9 /usr/bin/aarch64-linux-gnu-g++
           sudo ln -sf /usr/bin/arm-linux-gnueabi-gcc-9 /usr/bin/arm-linux-gnueabi-gcc
           sudo ln -sf /usr/bin/arm-linux-gnueabi-g++-9 /usr/bin/arm-linux-gnueabi-g++
           aarch64-linux-gnu-gcc --version | head -1
-
-      - name: Ensure python2 (20.04 ships python2.7; make sure 'python2' cmd exists)
-        run: |
-          if ! command -v python2 >/dev/null; then
-            sudo apt-get install -y python2 || true
-          fi
-          if ! command -v python2 >/dev/null && command -v python2.7 >/dev/null; then
-            sudo ln -sf "$(command -v python2.7)" /usr/bin/python2
-          fi
           python2 --version
 
-      - name: Configure kernel (disable broken VIDC driver)
+      - name: Configure kernel (disable broken VIDC driver, correct symbols for 17.1)
         run: |
           cd kernel
           make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- lineageos_h930_defconfig
-          ./scripts/config --file out/.config -d CONFIG_MSM_VIDC -d CONFIG_MSM_VIDC_VENC -d CONFIG_MSM_VIDC_VDEC
+          # 17.1 源码真实符号（本地已查 Kconfig）：
+          ./scripts/config --file out/.config -d CONFIG_MSM_VIDC_V4L2 -d CONFIG_MSM_VIDC_GOVERNORS -d CONFIG_MSM_VIDC_VMEM
           make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- olddefconfig
-          echo "VIDC disabled"
+          grep -E "CONFIG_MSM_VIDC" out/.config || echo "VIDC fully disabled"
 
       - name: Build kernel (GCC-9)
         run: |
           cd kernel
           make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- -j$(nproc) Image.gz-dtb \
-            KCFLAGS="-Wno-error -fcommon -Wno-error=unused-but-set-variable -Wno-error=misleading-indentation -Wno-error=enum-conversion -Wno-error=self-assign -Wno-error=fortify-source" \
+            KCFLAGS="-Wno-error -fcommon -Wno-error=unused-but-set-variable -Wno-error=misleading-indentation" \
             HOSTCFLAGS="-fcommon" > build.log 2>&1 || true
           echo "=== build finished, checking for errors ==="
           grep -nE "error:|Error [0-9]|undefined reference|No such file" build.log | grep -v objdump | head -30
