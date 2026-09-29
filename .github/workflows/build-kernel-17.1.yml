@@ -3,6 +3,8 @@
 # 关键变化: 编译器 clang -> GCC 9
 #   原因: ROM 自带内核为 GCC 编译，插坞+WiFi 正常；clang 编译同源码后插坞+WiFi 崩溃。
 #   对齐 ROM 的编译方式，保留 4K 补丁(3840x2160 UHD)。
+# runner: ubuntu-20.04（自带 python2.7，默认 gcc 9.x，bison/flex 版本更匹配 4.4 内核；
+#   22.04 无 python2 且 actions/setup-python 已不支持 2.7）
 # 用法（和之前完全一样）：
 #   1. 本文件上传到 .github/workflows/build-kernel-17.1-gcc9.yml
 #   2. 仓库 lineage-22.2 分支里已有 0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch 和 boot17.img
@@ -14,7 +16,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-20.04
     steps:
       - name: Checkout kernel (SGCMarkus lineage-17.1)
         uses: actions/checkout@v4
@@ -63,13 +65,15 @@ jobs:
           sudo ln -sf /usr/bin/arm-linux-gnueabi-g++-9 /usr/bin/arm-linux-gnueabi-g++
           aarch64-linux-gnu-gcc --version | head -1
 
-      - name: Setup Python 2.7 (4.4 kernel build scripts require python2)
-        uses: actions/setup-python@v4
-        with:
-          python-version: '2.7'
-
-      - name: Verify python2
-        run: python2 --version && which python2
+      - name: Ensure python2 (20.04 ships python2.7; make sure 'python2' cmd exists)
+        run: |
+          if ! command -v python2 >/dev/null; then
+            sudo apt-get install -y python2 || true
+          fi
+          if ! command -v python2 >/dev/null && command -v python2.7 >/dev/null; then
+            sudo ln -sf "$(command -v python2.7)" /usr/bin/python2
+          fi
+          python2 --version
 
       - name: Configure kernel (disable broken VIDC driver)
         run: |
