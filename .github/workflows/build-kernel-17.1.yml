@@ -1,25 +1,13 @@
-# LineageOS 17.1 (Android 10) 内核构建 + 4K 补丁 + GCC9 编译 + 重打包 boot.img
-# 源: SGCMarkus/android_kernel_lge_msm8998 @ lineage-17.1 (LG V30 joan, 内核 4.4.153)
-#
-# 为什么 GCC9 + 本地验证过的关键修复（2026-09-29 已在本地 sgcmarkus_17.1 源码验证）：
-# 1. ROM 自带内核为 GCC 编译，插坞+WiFi 正常；clang 编译同源码后插坞+WiFi 崩溃。
-#    对齐 ROM 的编译方式（GCC），保留 4K 补丁(3840x2160 UHD)。
-# 2. runner 用 ubuntu-22.04（20.04 镜像已被 GitHub 移除，等不到 runner）。
-#    22.04 没有 python2，但本地验证发现：python2 唯一调用者是 LG 的 gcc-wrapper.py，
-#    绕过它之后编译直接用 gcc，完全不需要 python2（见步骤 3）。
-# 3. 必须绕过 LG gcc-wrapper.py！Makefile 把 CC 包成 scripts/gcc-wrapper.py $(REAL_CC)，
-#    它用 python2 运行且白名单只有 4 条警告，GCC9 编译产生的新警告会全部被它拦截报错。
-#    本地实测 sed: CC = $(srctree)/scripts/gcc-wrapper.py $(REAL_CC) -> CC = $(REAL_CC)
-# 4. VIDC 真实符号是 CONFIG_MSM_VIDC_V4L2/_VMEM/_GOVERNORS（已查 17.1 源码 Kconfig），
-#    不是 CONFIG_MSM_VIDC/_VENC/_VDEC。
-# 5. KCFLAGS 只保留 GCC9 支持的 -Wno-error 项；-Wno-error=self-assign/fortify-source/
-#    enum-conversion 是 clang 专属选项，GCC9 不认识会直接 cc1 error。
-#
-# 用法：
-#   1. 本文件上传到 .github/workflows/build-kernel-17.1.yml（覆盖）
-#   2. 仓库 lineage-22.2 分支里已有 0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch 和 boot17.img
-#   3. Actions → Build Kernel 17.1 GCC9 → Run workflow → 下载 boot17-4k-gcc9 产物
-name: Build Kernel 17.1 GCC9 + 4K Patch + Repack
+# LineageOS 17.1 内核构建 — 对照实验（无 4K 补丁）
+# 目的：定位插坞+WiFi 开机卡死根因
+#   当前已知：官方内核（无补丁）正常；clang 编译（有补丁）卡死；GCC 4.9 同官方工具链（有补丁）仍卡死
+#   工具链变量已排除 → 本实验：同 GCC 4.9 配置，仅删除 4K 补丁步骤，验证 4K 补丁是否为根因
+# 预期：
+#   - 本内核无 4K 补丁 → HDMI 输出恢复官方 DCI 4096×2160（不是最终产物，仅供对照）
+#   - 插坞+WiFi 正常开机 → 4K 补丁确认为根因
+#   - 仍卡死 → 4K 补丁排除，继续查 VIDC 修复/配置/重打包差异
+# 用法：上传到 .github/workflows/ 任意文件名 → Run workflow → 下载 boot17-no4k
+name: Build Kernel 17.1 No-4K Control
 
 on:
   workflow_dispatch:
@@ -28,159 +16,270 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout kernel (SGCMarkus lineage-17.1)
+      - name: Checkout kernel (lineage-17.1)
         uses: actions/checkout@v4
         with:
           repository: SGCMarkus/android_kernel_lge_msm8998
           ref: lineage-17.1
           path: kernel
-
-      - name: Download 4K EDID patch and apply
+      - name: Fix tspdrv.h
         run: |
           cd kernel
-          curl -fL -o 0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch \
-            "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch" \
-            || { echo "patch not found in repo - upload it first"; exit 1; }
-          git apply --verbose 0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch
-          echo "4K patch applied OK"
-
-      - name: Bypass LG gcc-wrapper.py (python2-only + 4-line warning whitelist would kill GCC9 build)
-        run: |
-          cd kernel
-          # 本地已验证：把 CC 从 gcc-wrapper.py 包壳改回真实 gcc
-          sed -i 's|\$(srctree)/scripts/gcc-wrapper.py \$(REAL_CC)|\$(REAL_CC)|' Makefile
-          grep -n "^CC[[:space:]]*=" Makefile
-          echo "gcc-wrapper bypassed (CC now points to REAL_CC)"
-
-      - name: Defensive tspdrv fix (only if file exists)
+          python3 -c "
+          import os
+          p='include/uapi/linux/tspdrv.h'
+          if os.path.exists(p):
+              s=open(p).read()
+              if '#include <sys/ioctl.h>' in s:
+                  s=s.replace('#include <sys/ioctl.h>',
+                    '#ifdef __KERNEL__\n#include \"ioctl.h\"\n#else\n#include <sys/ioctl.h>\n#endif',1)
+                  open(p,'w').write(s)
+                  print('tspdrv fixed')
+              else: print('tspdrv ok')
+          else: print('no tspdrv')
+          "
+      - name: Fix nested functions in VIDC driver (clang incompatible)
         run: |
           cd kernel
           python3 <<'PY'
-          import os
-          p = 'include/uapi/linux/tspdrv.h'
-          if os.path.exists(p):
-              s = open(p).read()
-              if '#include <sys/ioctl.h>' in s:
-                  s = s.replace('#include <sys/ioctl.h>',
-                      '#ifdef __KERNEL__\n#include "ioctl.h"\n#else\n#include <sys/ioctl.h>\n#endif', 1)
-                  open(p, 'w').write(s)
-                  print('tspdrv.h fixed')
-              else:
-                  print('tspdrv.h present, no bug')
-          else:
-              print('tspdrv.h not in 17.1, skip')
+          import re, glob
+          FUNC_HEAD = re.compile(
+              r'^[ \t]*(?:static[ \t]+)?(?:inline[ \t]+)?(?:const[ \t]+)?'
+              r'[A-Za-z_][A-Za-z0-9_ \t\*]*?[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(')
+          CONTROL = {'if', 'for', 'while', 'switch', 'return', 'sizeof', 'typeof'}
+          def find_function_heads(text):
+              lines = text.split('\n')
+              heads = []
+              for i, line in enumerate(lines):
+                  if '#' in line:
+                      continue
+                  if re.match(r'^[ \t]*(struct|enum|union) ', line):
+                      continue
+                  m = FUNC_HEAD.match(line)
+                  if not m:
+                      continue
+                  name = m.group(1)
+                  if name in CONTROL:
+                      continue
+                  stripped = line.rstrip()
+                  if stripped.endswith(';'):
+                      continue
+                  if '{' in stripped:
+                      is_head = True
+                  else:
+                      j = i + 1
+                      while j < len(lines) and lines[j].strip() == '':
+                          j += 1
+                      is_head = j < len(lines) and lines[j].strip().startswith('{')
+                  if is_head:
+                      offset = sum(len(l) + 1 for l in lines[:i])
+                      heads.append((offset, name))
+              return heads
+          def match_braces(text, brace_offset):
+              depth = 0
+              pos = brace_offset
+              while pos < len(text):
+                  c = text[pos]
+                  if c == '{':
+                      depth += 1
+                  elif c == '}':
+                      depth -= 1
+                      if depth == 0:
+                          return pos + 1
+                  pos += 1
+              return len(text)
+          def fix_file(text):
+              extracted = []
+              while True:
+                  heads = find_function_heads(text)
+                  ranges = []
+                  for offset, name in heads:
+                      brace = text.index('{', offset)
+                      end = match_braces(text, brace)
+                      ranges.append((offset, brace, end, name))
+                  found = None
+                  for a in ranges:
+                      for b in ranges:
+                          if a is not b and b[0] < a[0] and a[2] < b[2] and b[1] < a[1]:
+                              found = (b, a)
+                              break
+                      if found:
+                          break
+                  if not found:
+                      break
+                  outer, inner = found
+                  helper_block = text[inner[0]:inner[2]]
+                  helper_lines = helper_block.split('\n')
+                  dedented = [l[1:] if l.startswith('\t') else l for l in helper_lines]
+                  helper_text = '\n'.join(dedented).strip('\n') + '\n'
+                  rem_start = inner[0]
+                  while rem_start > outer[0] and text[rem_start - 1] == '\t':
+                      rem_start -= 1
+                  rem_end = inner[2]
+                  while rem_end < outer[2] and text[rem_end] in ' \t\n':
+                      rem_end += 1
+                  outer_head_and_prefix = text[outer[0]:rem_start]
+                  outer_tail = text[rem_end:outer[2]]
+                  text = text[:outer[0]] + helper_text + '\n' + outer_head_and_prefix + outer_tail + text[outer[2]:]
+                  extracted.append(inner[3])
+              return text, extracted
+          any_fix = False
+          for path in sorted(glob.glob('drivers/media/platform/msm/vidc/*.c')):
+              s = open(path).read()
+              new_s, extracted = fix_file(s)
+              if extracted:
+                  open(path, 'w').write(new_s)
+                  any_fix = True
+                  print(f'{path}: extracted {extracted}')
+          if not any_fix:
+              print('no nested functions found (already clean)')
           PY
-
-      - name: Install GCC-9 toolchain (aarch64 + arm32) + qemu for arm64 magiskboot
+      - name: Add stpcpy/bcmp compat to lib/string.c
+        run: |
+          cd kernel
+          python3 <<'PY'
+          content = open('lib/string.c').read()
+          changed = False
+          if 'stpcpy' not in content:
+              stpcpy_block = '''
+          /**
+           * stpcpy - copy a string from src to dest returning a pointer to the new end
+           *          of dest, including src's %NUL-terminator. May overrun dest.
+           * @dest: pointer to end of string being copied into. Must be large enough
+           *        to receive copy.
+           * @src: pointer to the beginning of string being copied from. Must not overlap
+           *       dest.
+           *
+           * stpcpy differs from strcpy in a key way: the return value is a pointer
+           * to the new %NUL-terminating character in @dest. (For strcpy, the return
+           * value is a pointer to the start of @dest). This interface is considered
+           * unsafe as it doesn't perform bounds checking of the inputs. As such it's
+           * not recommended for usage. Instead, its definition is provided in case
+           * the compiler lowers other libcalls to stpcpy.
+           */
+          char *stpcpy(char *__restrict__ dest, const char *__restrict__ src);
+          char *stpcpy(char *__restrict__ dest, const char *__restrict__ src)
+          {
+          	while ((*dest++ = *src++) != '\\0')
+          		/* nothing */;
+          	return --dest;
+          }
+          EXPORT_SYMBOL(stpcpy);
+          '''
+              content = content.rstrip('\n') + '\n' + stpcpy_block
+              changed = True
+          if 'bcmp' not in content:
+              bcmp_block = '''
+          /**
+           * bcmp - Compare two areas of memory (compat for compiler-lowered libcalls)
+           * @cs: One area of memory
+           * @ct: Another area of memory
+           * @count: The size of the area.
+           */
+          int bcmp(const void *cs, const void *ct, size_t count)
+          {
+          	return memcmp(cs, ct, count);
+          }
+          EXPORT_SYMBOL(bcmp);
+          '''
+              content = content.rstrip('\n') + '\n' + bcmp_block
+              changed = True
+          if changed:
+              open('lib/string.c', 'w').write(content)
+              print('patched lib/string.c: stpcpy=%(s)s bcmp=%(b)s' % {'s': 'stpcpy' in content, 'b': 'bcmp' in content})
+          else:
+              print('lib/string.c already has stpcpy/bcmp')
+          PY
+      - name: Install dependencies + LineageOS GCC 4.9 toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison flex build-essential libssl-dev libncurses5-dev zip \
-            gcc-9-aarch64-linux-gnu g++-9-aarch64-linux-gnu \
-            gcc-9-arm-linux-gnueabi g++-9-arm-linux-gnueabi \
-            qemu-user-static
-          sudo ln -sf /usr/bin/aarch64-linux-gnu-gcc-9 /usr/bin/aarch64-linux-gnu-gcc
-          sudo ln -sf /usr/bin/aarch64-linux-gnu-g++-9 /usr/bin/aarch64-linux-gnu-g++
-          sudo ln -sf /usr/bin/arm-linux-gnueabi-gcc-9 /usr/bin/arm-linux-gnueabi-gcc
-          sudo ln -sf /usr/bin/arm-linux-gnueabi-g++-9 /usr/bin/arm-linux-gnueabi-g++
-          aarch64-linux-gnu-gcc --version | head -1
-
-      - name: Configure kernel (disable broken VIDC driver, correct symbols for 17.1)
+            gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
+          mkdir -p /opt/toolchain
+          echo "Downloading LineageOS GCC 4.9 prebuilt (~267MB)..."
+          curl -fL --retry 3 -o /opt/toolchain/gcc49.tar.gz \
+            "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9/archive/refs/heads/lineage-19.1.tar.gz"
+          tar -xzf /opt/toolchain/gcc49.tar.gz -C /opt/toolchain
+          mv /opt/toolchain/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9-lineage-19.1 /opt/toolchain/gcc49
+          ls /opt/toolchain/gcc49/bin/ | grep -E "gcc$|ld$|as$|objcopy$|strip$"
+          /opt/toolchain/gcc49/bin/aarch64-linux-android-gcc --version | head -2
+      - name: Configure kernel
         run: |
           cd kernel
-          make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- lineageos_h930_defconfig
-          # 17.1 源码真实符号（本地已查 Kconfig）：
-          ./scripts/config --file out/.config -d CONFIG_MSM_VIDC_V4L2 -d CONFIG_MSM_VIDC_GOVERNORS -d CONFIG_MSM_VIDC_VMEM
-          make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- olddefconfig
-          grep -E "CONFIG_MSM_VIDC" out/.config || echo "VIDC fully disabled"
-
-      - name: Build kernel (GCC-9)
+          export PATH=/opt/toolchain/gcc49/bin:$PATH
+          make O=out ARCH=arm64 CC=aarch64-linux-android-gcc \
+            CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            lineageos_h930_defconfig
+      - name: Build kernel
         run: |
           cd kernel
-          make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- -j$(nproc) Image.gz-dtb \
-            KCFLAGS="-Wno-error -fcommon -Wno-error=unused-but-set-variable -Wno-error=misleading-indentation" \
+          export PATH=/opt/toolchain/gcc49/bin:$PATH
+          make O=out ARCH=arm64 CC=aarch64-linux-android-gcc \
+            CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            -j$(nproc) Image.gz-dtb \
+            KCFLAGS="-Wno-error" CONFIG_WERROR=n \
             HOSTCFLAGS="-fcommon" > build.log 2>&1 || true
-          echo "=== build finished, checking for errors ==="
-          grep -nE "error:|Error [0-9]|undefined reference|No such file" build.log | grep -v objdump | head -30
-          echo "=== last 20 lines ==="
-          tail -20 build.log
+          echo "=== build exit ==="
+          grep -nE "error:|Error [0-9]|undefined reference|No such file" build.log | grep -v "objdump" | head -30
+          echo "=== last 15 lines ==="
+          tail -15 build.log
           if [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
             echo "=== KERNEL NOT BUILT ==="
             exit 1
           fi
           echo "=== KERNEL BUILT OK ==="
-
-      - name: Download boot17.img (LineageOS 17.1 boot image from repo)
+      - name: Download boot17.img
         run: |
           curl -fL -o boot.img \
             "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/boot17.img" \
-            || { echo "boot17.img not found - upload LineageOS 17.1 boot.img as boot17.img to your repo"; exit 1; }
-
-      - name: Patch boot with Magisk 30.7 (official boot_patch.sh flow via qemu-arm64, verified locally)
+            || { echo "boot17.img not found"; exit 1; }
+      - name: Repack boot image
         run: |
           cd "$GITHUB_WORKSPACE"
-          # 下载 Magisk 30.7 官方 APK
-          curl -fL -o magisk.apk "https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk"
-          unzip -o -q magisk.apk \
-            "lib/arm64-v8a/libmagiskboot.so" \
-            "lib/arm64-v8a/libmagiskinit.so" \
-            "lib/arm64-v8a/libmagisk.so" \
-            "lib/arm64-v8a/libinit-ld.so" \
-            "assets/stub.apk"
-          # 注意：官方 x86_64 magiskboot 在 Actions runner 上 Illegal instruction（CPU 指令集不支持），
-          # 改用 APK 内置 arm64 静态 magiskboot + qemu 模拟（任何 x86 CPU 都能跑，本地已验证）。
-          cp lib/arm64-v8a/libmagiskboot.so magiskboot
-          cp lib/arm64-v8a/libmagiskinit.so magiskinit
-          cp lib/arm64-v8a/libmagisk.so magisk
-          cp lib/arm64-v8a/libinit-ld.so init-ld
-          cp assets/stub.apk stub.apk
-          chmod +x magiskboot magiskinit magisk init-ld
-          QEMU=qemu-aarch64-static
-          $QEMU magiskboot unpack boot.img || exit 1
-          echo "unpack OK"
-          # 备份原始 ramdisk（boot_patch.sh line 140）
-          cp -af ramdisk.cpio ramdisk.cpio.orig
-          # 替换内核（自编译 Image.gz-dtb），删除重复拆出的 kernel_dtb
-          cp kernel/out/arch/arm64/boot/Image.gz-dtb kernel
-          rm -f kernel_dtb
-          # 压缩注入文件（magiskboot 自带 xz）
-          $QEMU magiskboot compress=xz magisk magisk.xz
-          $QEMU magiskboot compress=xz stub.apk stub.xz
-          $QEMU magiskboot compress=xz init-ld init-ld.xz
-          # 写 config（boot_patch.sh line 182-190）
-          SHA1=$($QEMU magiskboot sha1 boot.img)
-          printf "KEEPVERITY=false\nKEEPFORCEENCRYPT=false\nRECOVERYMODE=false\nVENDORBOOT=false\nSHA1=%s\n" "$SHA1" > config
-          # ramdisk 注入（boot_patch.sh line 192-203）
-          $QEMU magiskboot cpio ramdisk.cpio \
-            "add 0750 init magiskinit" \
-            "mkdir 0750 overlay.d" \
-            "mkdir 0750 overlay.d/sbin" \
-            "add 0644 overlay.d/sbin/magisk.xz magisk.xz" \
-            "add 0644 overlay.d/sbin/stub.xz stub.xz" \
-            "add 0644 overlay.d/sbin/init-ld.xz init-ld.xz" \
-            "patch" \
-            "backup ramdisk.cpio.orig" \
-            "mkdir 000 .backup" \
-            "add 000 .backup/.magisk config"
-          # repack：换内核 + Magisk root
-          $QEMU magiskboot repack boot.img new-boot.img
-          ls -l new-boot.img
-
-      - name: Verify output (Magisk patched check)
+          python3 <<'PY'
+          import struct
+          def align(x, n): return (x + n - 1) // n * n
+          boot = open('boot.img', 'rb').read()
+          kernel = open('kernel/out/arch/arm64/boot/Image.gz-dtb', 'rb').read()
+          assert boot[:8] == b'ANDROID!', 'not a boot image'
+          ks, ka, rs, ra, ss, sa, ta, ps = struct.unpack_from('<8I', boot, 8)
+          kernel_off = ps
+          ramdisk_off = kernel_off + align(ks, ps)
+          second_off = ramdisk_off + align(rs, ps)
+          new_ks = len(kernel)
+          new_ramdisk_off = kernel_off + align(new_ks, ps)
+          new_second_off = new_ramdisk_off + align(rs, ps)
+          out = boot[:kernel_off] + kernel
+          out += b'\x00' * (new_ramdisk_off - len(out))
+          out += boot[ramdisk_off:second_off]
+          out += b'\x00' * (new_second_off - len(out))
+          if ss: out += boot[second_off:second_off + ss]
+          h = bytearray(out[:ps])
+          struct.pack_into('<I', h, 8, new_ks)
+          with open('new-boot.img', 'wb') as f:
+              f.write(bytes(h) + out[ps:])
+          print('kernel bytes:', new_ks, 'ramdisk:', rs, 'pagesize:', ps)
+          PY
+      - name: Verify and upload
         run: |
-          cd "$GITHUB_WORKSPACE"
           ls -l new-boot.img
-          mkdir -p vrf && cd vrf
-          QEMU=qemu-aarch64-static
-          ../magiskboot unpack ../new-boot.img >/dev/null 2>&1
-          $QEMU ../magiskboot cpio ramdisk.cpio test
-          echo "cpio status=$? (1=Magisk patched, 0=stock)"
-          $QEMU ../magiskboot cpio ramdisk.cpio "ls" | grep -E "init|overlay.d/sbin|\.backup/.magisk" | head -8
-
-      - name: Upload boot (Magisk 30.7 patched)
+          python3 -c "import struct; d=open('new-boot.img','rb').read(); print('magic:', d[:8], 'kernel:', struct.unpack_from('<I', d, 8)[0])"
+          # 验证内核编译器版本（必须显示 gcc 4.9.x）
+          python3 <<'PY'
+          import struct, zlib, re
+          d = open('new-boot.img','rb').read()
+          ks, ka, rs, ra, ss, sa, ta, ps = struct.unpack_from('<8I', d, 8)
+          img = zlib.decompress(d[ps:ps+ks], 16 + zlib.MAX_WBITS)
+          m = re.search(rb'gcc version [^\x00]+', img)
+          ver = m.group(0).decode(errors='replace') if m else 'NOT FOUND'
+          print('compiler:', ver)
+          if '4.9' not in ver:
+              print('WARNING: 编译器不是 GCC 4.9，检查工具链安装！')
+              raise SystemExit(1)
+          print('OK: 编译器为 GCC 4.9，与官方 boot17.img 同工具链')
+          PY
+      - name: Upload boot (NO-4K control)
         uses: actions/upload-artifact@v4
         with:
-          name: boot17-4k-gcc9-magisk30.7
+          name: boot17-no4k
           path: new-boot.img
