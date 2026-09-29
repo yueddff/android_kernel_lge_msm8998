@@ -71,12 +71,13 @@ jobs:
               print('tspdrv.h not in 17.1, skip')
           PY
 
-      - name: Install GCC-9 toolchain (aarch64 + arm32)
+      - name: Install GCC-9 toolchain (aarch64 + arm32) + qemu for arm64 magiskboot
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison flex build-essential libssl-dev libncurses5-dev zip \
             gcc-9-aarch64-linux-gnu g++-9-aarch64-linux-gnu \
-            gcc-9-arm-linux-gnueabi g++-9-arm-linux-gnueabi
+            gcc-9-arm-linux-gnueabi g++-9-arm-linux-gnueabi \
+            qemu-user-static
           sudo ln -sf /usr/bin/aarch64-linux-gnu-gcc-9 /usr/bin/aarch64-linux-gnu-gcc
           sudo ln -sf /usr/bin/aarch64-linux-gnu-g++-9 /usr/bin/aarch64-linux-gnu-g++
           sudo ln -sf /usr/bin/arm-linux-gnueabi-gcc-9 /usr/bin/arm-linux-gnueabi-gcc
@@ -117,24 +118,27 @@ jobs:
             "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/boot17.img" \
             || { echo "boot17.img not found - upload LineageOS 17.1 boot.img as boot17.img to your repo"; exit 1; }
 
-      - name: Patch boot with Magisk 30.7 (official boot_patch.sh flow, verified locally)
+      - name: Patch boot with Magisk 30.7 (official boot_patch.sh flow via qemu-arm64, verified locally)
         run: |
           cd "$GITHUB_WORKSPACE"
           # 下载 Magisk 30.7 官方 APK
           curl -fL -o magisk.apk "https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk"
           unzip -o -q magisk.apk \
-            "lib/x86_64/libmagiskboot.so" \
+            "lib/arm64-v8a/libmagiskboot.so" \
             "lib/arm64-v8a/libmagiskinit.so" \
             "lib/arm64-v8a/libmagisk.so" \
             "lib/arm64-v8a/libinit-ld.so" \
             "assets/stub.apk"
-          cp lib/x86_64/libmagiskboot.so magiskboot
+          # 注意：官方 x86_64 magiskboot 在 Actions runner 上 Illegal instruction（CPU 指令集不支持），
+          # 改用 APK 内置 arm64 静态 magiskboot + qemu 模拟（任何 x86 CPU 都能跑，本地已验证）。
+          cp lib/arm64-v8a/libmagiskboot.so magiskboot
           cp lib/arm64-v8a/libmagiskinit.so magiskinit
           cp lib/arm64-v8a/libmagisk.so magisk
           cp lib/arm64-v8a/libinit-ld.so init-ld
           cp assets/stub.apk stub.apk
           chmod +x magiskboot magiskinit magisk init-ld
-          ./magiskboot unpack boot.img >/dev/null 2>&1 || exit 1
+          QEMU=qemu-aarch64-static
+          $QEMU magiskboot unpack boot.img || exit 1
           echo "unpack OK"
           # 备份原始 ramdisk（boot_patch.sh line 140）
           cp -af ramdisk.cpio ramdisk.cpio.orig
@@ -142,14 +146,14 @@ jobs:
           cp kernel/out/arch/arm64/boot/Image.gz-dtb kernel
           rm -f kernel_dtb
           # 压缩注入文件（magiskboot 自带 xz）
-          ./magiskboot compress=xz magisk magisk.xz
-          ./magiskboot compress=xz stub.apk stub.xz
-          ./magiskboot compress=xz init-ld init-ld.xz
+          $QEMU magiskboot compress=xz magisk magisk.xz
+          $QEMU magiskboot compress=xz stub.apk stub.xz
+          $QEMU magiskboot compress=xz init-ld init-ld.xz
           # 写 config（boot_patch.sh line 182-190）
-          SHA1=$(./magiskboot sha1 boot.img)
+          SHA1=$($QEMU magiskboot sha1 boot.img)
           printf "KEEPVERITY=false\nKEEPFORCEENCRYPT=false\nRECOVERYMODE=false\nVENDORBOOT=false\nSHA1=%s\n" "$SHA1" > config
           # ramdisk 注入（boot_patch.sh line 192-203）
-          ./magiskboot cpio ramdisk.cpio \
+          $QEMU magiskboot cpio ramdisk.cpio \
             "add 0750 init magiskinit" \
             "mkdir 0750 overlay.d" \
             "mkdir 0750 overlay.d/sbin" \
@@ -161,7 +165,7 @@ jobs:
             "mkdir 000 .backup" \
             "add 000 .backup/.magisk config"
           # repack：换内核 + Magisk root
-          ./magiskboot repack boot.img new-boot.img
+          $QEMU magiskboot repack boot.img new-boot.img
           ls -l new-boot.img
 
       - name: Verify output (Magisk patched check)
@@ -169,10 +173,11 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           ls -l new-boot.img
           mkdir -p vrf && cd vrf
+          QEMU=qemu-aarch64-static
           ../magiskboot unpack ../new-boot.img >/dev/null 2>&1
-          ../magiskboot cpio ramdisk.cpio test
+          $QEMU ../magiskboot cpio ramdisk.cpio test
           echo "cpio status=$? (1=Magisk patched, 0=stock)"
-          ../magiskboot cpio ramdisk.cpio "ls" | grep -E "init|overlay.d/sbin|\.backup/.magisk" | head -8
+          $QEMU ../magiskboot cpio ramdisk.cpio "ls" | grep -E "init|overlay.d/sbin|\.backup/.magisk" | head -8
 
       - name: Upload boot (Magisk 30.7 patched)
         uses: actions/upload-artifact@v4
