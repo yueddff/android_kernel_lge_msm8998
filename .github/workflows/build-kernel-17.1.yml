@@ -4,8 +4,9 @@
 # 为什么 GCC9 + 本地验证过的关键修复（2026-09-29 已在本地 sgcmarkus_17.1 源码验证）：
 # 1. ROM 自带内核为 GCC 编译，插坞+WiFi 正常；clang 编译同源码后插坞+WiFi 崩溃。
 #    对齐 ROM 的编译方式（GCC），保留 4K 补丁(3840x2160 UHD)。
-# 2. runner 用 ubuntu-20.04：自带 python2.7，默认 gcc 9.x，bison/flex 版本匹配 4.4 内核。
-#    (22.04 无 python2，且 actions/setup-python 已不支持 2.7)
+# 2. runner 用 ubuntu-22.04（20.04 镜像已被 GitHub 移除，等不到 runner）。
+#    22.04 没有 python2，但本地验证发现：python2 唯一调用者是 LG 的 gcc-wrapper.py，
+#    绕过它之后编译直接用 gcc，完全不需要 python2（见步骤 3）。
 # 3. 必须绕过 LG gcc-wrapper.py！Makefile 把 CC 包成 scripts/gcc-wrapper.py $(REAL_CC)，
 #    它用 python2 运行且白名单只有 4 条警告，GCC9 编译产生的新警告会全部被它拦截报错。
 #    本地实测 sed: CC = $(srctree)/scripts/gcc-wrapper.py $(REAL_CC) -> CC = $(REAL_CC)
@@ -25,7 +26,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout kernel (SGCMarkus lineage-17.1)
         uses: actions/checkout@v4
@@ -70,22 +71,17 @@ jobs:
               print('tspdrv.h not in 17.1, skip')
           PY
 
-      - name: Install GCC-9 toolchain + ensure python2 (20.04 ships python2.7)
+      - name: Install GCC-9 toolchain (aarch64 + arm32)
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison flex build-essential libssl-dev libncurses5-dev zip \
             gcc-9-aarch64-linux-gnu g++-9-aarch64-linux-gnu \
-            gcc-9-arm-linux-gnueabi g++-9-arm-linux-gnueabi \
-            python2 || true
-          if ! command -v python2 >/dev/null && command -v python2.7 >/dev/null; then
-            sudo ln -sf "$(command -v python2.7)" /usr/bin/python2
-          fi
+            gcc-9-arm-linux-gnueabi g++-9-arm-linux-gnueabi
           sudo ln -sf /usr/bin/aarch64-linux-gnu-gcc-9 /usr/bin/aarch64-linux-gnu-gcc
           sudo ln -sf /usr/bin/aarch64-linux-gnu-g++-9 /usr/bin/aarch64-linux-gnu-g++
           sudo ln -sf /usr/bin/arm-linux-gnueabi-gcc-9 /usr/bin/arm-linux-gnueabi-gcc
           sudo ln -sf /usr/bin/arm-linux-gnueabi-g++-9 /usr/bin/arm-linux-gnueabi-g++
           aarch64-linux-gnu-gcc --version | head -1
-          python2 --version
 
       - name: Configure kernel (disable broken VIDC driver, correct symbols for 17.1)
         run: |
