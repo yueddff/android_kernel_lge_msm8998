@@ -120,6 +120,29 @@ jobs:
           print('new-boot.img written')
           PY
 
+      - name: Patch boot with Magisk 37.0
+        run: |
+          echo "=== download Magisk 37.0 ==="
+          wget -q "https://github.com/topjohnwu/Magisk/releases/download/v37.0/Magisk-v37.0.apk" -O magisk.apk
+          unzip -o -q magisk.apk lib/arm64-v8a/libmagiskboot.so lib/arm64-v8a/libmagiskinit.so
+          mkdir -p magisk_patch
+          mv lib/arm64-v8a/libmagiskboot.so magisk_patch/magiskboot
+          mv lib/arm64-v8a/libmagiskinit.so magisk_patch/magiskinit
+          chmod +x magisk_patch/magiskboot magisk_patch/magiskinit
+          cd magisk_patch
+          echo "=== unpack ==="
+          ./magiskboot unpack ../new-boot.img
+          echo "=== patch ramdisk ==="
+          ./magiskboot cpio ramdisk.cpio \
+            "add 0750 init magiskinit" \
+            "patch" \
+            "mv init init.bak" \
+            "ln sbin/magiskinit init"
+          echo "=== repack ==="
+          ./magiskboot repack ../new-boot.img
+          mv new-boot.img ../new-boot.img
+          echo "=== magisk patched OK ==="
+
       - name: Verify output
         run: |
           ls -l "$GITHUB_WORKSPACE/new-boot.img"
