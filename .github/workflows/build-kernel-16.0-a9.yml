@@ -25,102 +25,13 @@ jobs:
           ls kernel | head -20
           cat kernel/Makefile | head -5
 
-      - name: Download 4K EDID patch and apply (with python fallback)
+      - name: Apply 4K EDID patch (standalone script, verified)
         run: |
           cd kernel
-          curl -fL -o 0001-sde-hdmi-edid-4k-fix.patch \
-            "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch" \
-            || { echo "patch not found in repo - upload it first"; exit 1; }
-          if git apply --check --verbose 0001-sde-hdmi-edid-4k-fix.patch 2>/dev/null; then
-            git apply --verbose 0001-sde-hdmi-edid-4k-fix.patch
-            echo "4K patch applied OK (git apply)"
-          else
-            echo "git apply failed, using python fallback..."
-            python3 <<'PY'
-# 按函数边界定位的内容补丁，适配 LG 官方 A9 源码 (LA.UM.7.4)
-# 已在本地用 GitLab LA.UM.7.4.r1-03500-8x98.0 的 mdss_hdmi_edid.c 验证通过
-p = 'drivers/video/fbdev/msm/mdss_hdmi_edid.c'
-s = open(p).read()
-if 'hdmi_edid_is_dci_4k' in s:
-    print('already patched')
-    raise SystemExit(0)
-
-helper = '''static bool hdmi_edid_is_dci_4k(struct msm_hdmi_mode_timing_info *timing)
-{
-	return timing->active_h == 4096 && timing->active_v == 2160;
-}
-
-static u32 hdmi_edid_sanitize_preferred(u32 video_format)
-{
-	if (video_format >= HDMI_VFRMT_4096x2160p24_256_135 &&
-		video_format <= HDMI_VFRMT_4096x2160p60_256_135)
-		return HDMI_VFRMT_3840x2160p60_16_9;
-
-	return video_format;
-}
-'''
-
-dci_drop = '''\tif (hdmi_edid_is_dci_4k(&timing)) {
-\t\tDEV_DBG("%s: dropping DCI 4K format %d [%s]\\n", __func__,
-\t\t\tvideo_format, msm_hdmi_mode_2string(video_format));
-\t\treturn;
-\t}
-'''
-
-def insert_after_func(text, func_name, insert):
-    """在指定函数体结束(下一个同缩进 '}' )之后插入"""
-    idx = text.find(func_name)
-    if idx < 0:
-        raise SystemExit('func not found: ' + func_name)
-    brace = text.find('{', idx)
-    depth = 0
-    pos = brace
-    while pos < len(text):
-        c = text[pos]
-        if c == '{': depth += 1
-        elif c == '}':
-            depth -= 1
-            if depth == 0:
-                break
-        pos += 1
-    return text[:pos+1] + '\n' + insert + text[pos+1:]
-
-# 1) 在 hdmi_edid_find_hfvsdb 函数后插入两个 helper
-s = insert_after_func(s, 'static const u8 *hdmi_edid_find_hfvsdb', helper.rstrip('\n'))
-print('helpers inserted')
-
-# 2) DCI 丢弃块插入（两个 add_sink 函数，锚点按 LG A9 源码结构）
-#    y420_format: 函数体开头的 "if (!sink) {" 前
-#    video_format: 函数体开头的 "if (video_format >= HDMI_VFRMT_MAX) {" 前 (LG A9 无 !sink)
-def insert_before(text, func_name, anchor, insert):
-    idx = text.find(func_name)
-    brace = text.find('{', idx)
-    at = text.find(anchor, brace)
-    if at < 0:
-        raise SystemExit('anchor not found in ' + func_name + ': ' + anchor)
-    return text[:at] + insert + text[at:]
-
-s = insert_before(s, 'hdmi_edid_add_sink_y420_format',
-                  '\tif (!sink) {', dci_drop)
-print('dci drop inserted in hdmi_edid_add_sink_y420_format')
-s = insert_before(s, 'hdmi_edid_add_sink_video_format',
-                  '\tif (video_format >= HDMI_VFRMT_MAX) {', dci_drop)
-print('dci drop inserted in hdmi_edid_add_sink_video_format (LG A9 anchor)')
-
-# 3) preferred_video_format 全部 sanitize 包装（宽松匹配所有缩进）
-import re
-s2 = re.sub(r'preferred_video_format\s*=\s*video_format;',
-            'preferred_video_format =\n\t\t\t\t\t\thdmi_edid_sanitize_preferred(video_format);',
-            s)
-changed = s2 != s
-s = s2
-print('preferred sanitize wrapped:', changed, '| calls:',
-      s.count('hdmi_edid_sanitize_preferred(video_format);'))
-
-open(p, 'w').write(s)
-print('4K patch applied OK (python fallback, verified against LG A9 source)')
-PY
-          fi
+          curl -fL -o /tmp/patch_4k_a9.py \
+            "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/patch_4k_a9.py" \
+            || { echo "patch_4k_a9.py not found in repo - upload it first"; exit 1; }
+          python3 /tmp/patch_4k_a9.py
 
       - name: Select V300L defconfig (LG U+ Korea)
         run: |
