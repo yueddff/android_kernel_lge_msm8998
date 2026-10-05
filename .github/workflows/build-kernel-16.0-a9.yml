@@ -39,13 +39,14 @@ jobs:
             echo "=== install deps ==="
             apt-get update -qq 2>&1 | tail -2
             apt-get install -y -qq bc bison flex build-essential libssl-dev zip \
-              python2 wget 2>&1 | tail -5
+              python2 python3 wget 2>&1 | tail -5
             echo "=== download GCC 4.9 prebuilts (same as LG official) ==="
             mkdir -p /opt/tc && cd /opt/tc
             wget -q "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9/archive/refs/heads/lineage-19.1.tar.gz" -O a64.tar.gz
             tar xzf a64.tar.gz && mv android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9-lineage-19.1 gcc49
             wget -q "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9/archive/refs/heads/lineage-19.1.tar.gz" -O arm.tar.gz
             tar xzf arm.tar.gz && mv android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9-lineage-19.1 gcc49-arm
+            ln -sf /usr/bin/python2 /usr/bin/python
             export PATH=/opt/tc/gcc49/bin:/opt/tc/gcc49-arm/bin:$PATH
             python2 --version
             aarch64-linux-android-gcc --version | head -1
