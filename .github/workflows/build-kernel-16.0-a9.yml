@@ -1,14 +1,14 @@
 # LG V30 (joan) 官方 Android 9 (Pie) 内核构建 + 4K 补丁 + 重打包 boot.img
-# 源: gitlab.com/vostok/kernel_lge_msm @ LA.UM.7.4.r1-03500-8x98.0 (LGH930DS 30e = LG 官方 Pie 内核)
-# 说明: LA.UM.7.4 = Android 9 CAF 分支; LG 官方固件 H930DS v30e 自带内核源码（opensource.lge.com 镜像）
-# 4K 修复: 复用验证过的 mdss_hdmi_edid.c 补丁（丢弃 DCI 4K 4096x2160，强制 UHD 3840x2160）
-# 编译: ubuntu-20.04 + GCC9（与 17.1 已验证流程一致）
+# 源: gitlab.com/vostok/kernel_lge_msm @ LA.UM.7.4.r1-03500-8x98.0 (LG 官方 Pie 内核, LGH930DS30e)
+# 4K 修复: patch_4k_a9.py (丢弃 DCI 4096x2160, 强制 UHD 3840x2160, 已本地验证)
+# 环境: runner=ubuntu-22.04, 编译在 ubuntu:20.04 容器内 (python2.7 + gcc-9 齐备)
 # 用法:
-#   1. 本文件上传到 .github/workflows/build-kernel-16.0-a9.yml
-#   2. 仓库 lineage-22.2 分支需有:
-#       0001-sde-hdmi-edid-4k-fix-lineage-17.1.patch（4K 补丁，可复用）
-#       boot-a9.img（LG 官方 Android 9 固件提取的 boot.img，作为 ramdisk 底包）
-#   3. Actions → Build Kernel 16.0 A9 + 4K → Run workflow → 下载 boot16-4k 产物
+#   1. 仓库 lineage-22.2 分支需有:
+#      patch_4k_a9.py (4K 补丁脚本, 根目录)
+#      boot-a9.img  (LG 官方 Android 9 固件提取的 boot.img, 根目录)
+#   2. 本文件放 .github/workflows/build-kernel-16.0-a9.yml
+#   3. Actions -> Build Kernel 16.0 A9 + 4K Patch + Repack -> Run workflow
+#      等待编译完成下载 boot16-4k 产物
 name: Build Kernel 16.0 A9 + 4K Patch + Repack
 
 on:
@@ -16,81 +16,56 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
       - name: Clone LG official Android 9 (Pie) kernel
         run: |
           git clone --depth 1 -b LA.UM.7.4.r1-03500-8x98.0 \
             https://gitlab.com/vostok/kernel_lge_msm.git kernel
           ls kernel | head -20
-          cat kernel/Makefile | head -5
+          echo "--- defconfig check ---"
+          ls kernel/arch/arm64/configs/ | grep -E "joan_lgu_kr" || echo "joan_lgu_kr NOT FOUND"
 
-      - name: Apply 4K EDID patch (standalone script, verified)
+      - name: Download 4K patch script
         run: |
-          cd kernel
-          curl -fL -o /tmp/patch_4k_a9.py \
+          curl -fL -o patch_4k_a9.py \
             "https://raw.githubusercontent.com/yueddff/android_kernel_lge_msm8998/lineage-22.2/patch_4k_a9.py" \
-            || { echo "patch_4k_a9.py not found in repo - upload it first"; exit 1; }
-          python3 /tmp/patch_4k_a9.py
+            || { echo "patch_4k_a9.py not found - upload it to repo root first"; exit 1; }
+          ls -l patch_4k_a9.py
 
-      - name: Select V300L defconfig (LG U+ Korea)
+      - name: Build kernel inside ubuntu-20.04 container (python2 + gcc-9)
         run: |
-          cd kernel
-          echo "=== configs 匹配 joan_lgu_kr ==="
-          ls arch/arm64/configs/ | grep -iE "joan_lgu|joan.*lgu" || echo "NOT FOUND"
-          echo "=== 设备树匹配 joan_kr ==="
-          ls arch/arm64/boot/dts/lge/ | grep -i "joan_kr" || echo "NOT FOUND"
-          DEFCONFIG="joan_lgu_kr_defconfig"
-          echo "DEFCONFIG=$DEFCONFIG" >> $GITHUB_ENV
-          echo "selected: $DEFCONFIG (V300L = LG U+ Korea)"
-
-      - name: Install GCC-9 toolchain (aarch64 + arm32)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bc bison flex build-essential libssl-dev libncurses5-dev zip \
-            gcc-9-aarch64-linux-gnu g++-9-aarch64-linux-gnu \
-            gcc-9-arm-linux-gnueabi g++-9-arm-linux-gnueabi
-          sudo ln -sf /usr/bin/aarch64-linux-gnu-gcc-9 /usr/bin/aarch64-linux-gnu-gcc
-          sudo ln -sf /usr/bin/aarch64-linux-gnu-g++-9 /usr/bin/aarch64-linux-gnu-g++
-          sudo ln -sf /usr/bin/arm-linux-gnueabi-gcc-9 /usr/bin/arm-linux-gnueabi-gcc
-          sudo ln -sf /usr/bin/arm-linux-gnueabi-g++-9 /usr/bin/arm-linux-gnueabi-g++
-          aarch64-linux-gnu-gcc --version | head -1
-
-      - name: Ensure python2 (20.04 ships python2.7)
-        run: |
-          if ! command -v python2 >/dev/null; then
-            sudo apt-get install -y python2 || true
-          fi
-          if ! command -v python2 >/dev/null && command -v python2.7 >/dev/null; then
-            sudo ln -sf "$(command -v python2.7)" /usr/bin/python2
-          fi
-          python2 --version
-
-      - name: Configure kernel (LG official defconfig)
-        run: |
-          cd kernel
-          make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- $DEFCONFIG
-          make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- olddefconfig
-          echo "configured with $DEFCONFIG"
-
-      - name: Build kernel (GCC-9)
-        run: |
-          cd kernel
-          make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- -j$(nproc) Image.gz-dtb \
-            KCFLAGS="-Wno-error -fcommon -Wno-error=unused-but-set-variable -Wno-error=misleading-indentation -Wno-error=enum-conversion -Wno-error=self-assign -Wno-error=fortify-source" \
-            HOSTCFLAGS="-fcommon" > build.log 2>&1 || true
-          echo "=== build finished, checking for errors ==="
-          grep -nE "error:|Error [0-9]|undefined reference|No such file" build.log | grep -v objdump | head -30
-          echo "=== last 20 lines ==="
-          tail -20 build.log
-          if [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            echo "=== KERNEL NOT BUILT ==="
-            exit 1
-          fi
-          echo "=== KERNEL BUILT OK ==="
+          docker run --rm -v "$GITHUB_WORKSPACE":/work -w /work ubuntu:20.04 bash -c '
+            set -e
+            export DEBIAN_FRONTEND=noninteractive
+            echo "=== install toolchain ==="
+            apt-get update -qq
+            apt-get install -y -qq bc bison flex build-essential libssl-dev zip \
+              gcc-9-aarch64-linux-gnu g++-9-aarch64-linux-gnu \
+              gcc-9-arm-linux-gnueabi g++-9-arm-linux-gnueabi
+            python2 --version
+            aarch64-linux-gnu-gcc --version | head -1
+            echo "=== apply 4K patch ==="
+            cd /work/kernel
+            python3 /work/patch_4k_a9.py
+            echo "=== configure ==="
+            make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+              CROSS_COMPILE_ARM32=arm-linux-gnueabi- joan_lgu_kr_defconfig
+            echo "=== build ==="
+            make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+              CROSS_COMPILE_ARM32=arm-linux-gnueabi- -j$(nproc) Image.gz-dtb \
+              KCFLAGS="-Wno-error -fcommon -Wno-error=unused-but-set-variable -Wno-error=misleading-indentation -Wno-error=enum-conversion -Wno-error=self-assign -Wno-error=fortify-source" \
+              HOSTCFLAGS="-fcommon" > build.log 2>&1 || true
+            echo "=== build finished, checking for errors ==="
+            grep -nE "error:|Error [0-9]|undefined reference|No such file" build.log | grep -v objdump | head -30
+            echo "=== last 20 lines ==="
+            tail -20 build.log
+            if [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
+              echo "=== KERNEL NOT BUILT ==="
+              exit 1
+            fi
+            echo "=== KERNEL BUILT OK ==="
+          '
 
       - name: Download boot-a9.img (Android 9 boot image from repo)
         run: |
@@ -100,7 +75,6 @@ jobs:
 
       - name: Repack boot image (replace kernel, keep ramdisk)
         run: |
-          cd "$GITHUB_WORKSPACE"
           python3 <<'PY'
           import struct
 
