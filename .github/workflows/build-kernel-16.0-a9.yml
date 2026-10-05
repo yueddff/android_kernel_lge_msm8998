@@ -20,11 +20,9 @@ jobs:
     steps:
       - name: Clone LG official Android 9 (Pie) kernel
         run: |
-          git clone --depth 1 -b LA.UM.7.4.r1-03500-8x98.0 \
+          git clone -q --depth 1 -b LA.UM.7.4.r1-03500-8x98.0 \
             https://gitlab.com/vostok/kernel_lge_msm.git kernel
-          ls kernel | head -20
-          echo "--- defconfig check ---"
-          ls kernel/arch/arm64/configs/ | grep -E "joan_lgu_kr" || echo "joan_lgu_kr NOT FOUND"
+          ls kernel/arch/arm64/configs/ | grep joan_lgu_kr || echo "joan_lgu_kr NOT FOUND"
 
       - name: Download 4K patch script
         run: |
@@ -33,29 +31,35 @@ jobs:
             || { echo "patch_4k_a9.py not found - upload it to repo root first"; exit 1; }
           ls -l patch_4k_a9.py
 
-      - name: Build kernel inside ubuntu-20.04 container (python2 + gcc-9)
+      - name: Build kernel in container with LG official GCC 4.9 toolchain
         run: |
           docker run --rm -v "$GITHUB_WORKSPACE":/work -w /work ubuntu:20.04 bash -c '
             set -e
             export DEBIAN_FRONTEND=noninteractive
-            echo "=== install toolchain ==="
-            apt-get update -qq
+            echo "=== install deps ==="
+            apt-get update -qq 2>&1 | tail -2
             apt-get install -y -qq bc bison flex build-essential libssl-dev zip \
-              gcc-9-aarch64-linux-gnu g++-9-aarch64-linux-gnu \
-              gcc-9-arm-linux-gnueabi g++-9-arm-linux-gnueabi
+              python2 wget 2>&1 | tail -5
+            echo "=== download GCC 4.9 prebuilts (same as LG official) ==="
+            mkdir -p /opt/tc && cd /opt/tc
+            wget -q "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9/archive/refs/heads/lineage-19.1.tar.gz" -O a64.tar.gz
+            tar xzf a64.tar.gz && mv android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9-lineage-19.1 gcc49
+            wget -q "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9/archive/refs/heads/lineage-19.1.tar.gz" -O arm.tar.gz
+            tar xzf arm.tar.gz && mv android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9-lineage-19.1 gcc49-arm
+            export PATH=/opt/tc/gcc49/bin:/opt/tc/gcc49-arm/bin:$PATH
             python2 --version
-            aarch64-linux-gnu-gcc --version | head -1
+            aarch64-linux-android-gcc --version | head -1
+            arm-linux-androideabi-gcc --version | head -1
             echo "=== apply 4K patch ==="
             cd /work/kernel
             python3 /work/patch_4k_a9.py
             echo "=== configure ==="
-            make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-              CROSS_COMPILE_ARM32=arm-linux-gnueabi- joan_lgu_kr_defconfig
+            make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
+              CROSS_COMPILE_ARM32=arm-linux-androideabi- joan_lgu_kr_defconfig 2>&1 | tail -3
             echo "=== build ==="
-            make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-              CROSS_COMPILE_ARM32=arm-linux-gnueabi- -j$(nproc) Image.gz-dtb \
-              KCFLAGS="-Wno-error -fcommon -Wno-error=unused-but-set-variable -Wno-error=misleading-indentation -Wno-error=enum-conversion -Wno-error=self-assign -Wno-error=fortify-source" \
-              HOSTCFLAGS="-fcommon" > build.log 2>&1 || true
+            make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
+              CROSS_COMPILE_ARM32=arm-linux-androideabi- -j$(nproc) Image.gz-dtb \
+              KCFLAGS="-Wno-error" > build.log 2>&1 || true
             echo "=== build finished, checking for errors ==="
             grep -nE "error:|Error [0-9]|undefined reference|No such file" build.log | grep -v objdump | head -30
             echo "=== last 20 lines ==="
